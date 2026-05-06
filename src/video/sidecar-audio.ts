@@ -504,12 +504,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
     fromEvent(this._ompAudioElement.mediaElement, HTMLMediaElementEvents.ENDED)
       .pipe(takeUntil(this._destroyed$))
       .subscribe((event) => {
-        console.log(`[sidecar-audio:${this._audioTrack.id}] media ended`, {
-          currentTime: this._ompAudioElement.mediaElement.currentTime,
-          readyState: this._ompAudioElement.mediaElement.readyState,
-          paused: this._ompAudioElement.mediaElement.paused,
-          audioContextState: this._videoController.getAudioContext().state,
-        });
         this._mediaElementPlayback.setEnded();
       });
 
@@ -518,7 +512,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       .pipe(takeUntil(this._destroyed$))
       .subscribe({
         next: (event) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] state change`, event);
           this.playOrPause();
         },
       });
@@ -528,7 +521,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       .pipe(takeUntil(this._destroyed$))
       .subscribe({
         next: (event) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] window state`, event);
           this.audioPause();
         },
       });
@@ -539,7 +531,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       .pipe(takeUntil(this._destroyed$))
       .subscribe({
         next: (event) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] video play`, event);
           this.audioPlay();
         },
       });
@@ -550,7 +541,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       .pipe(takeUntil(this._destroyed$))
       .subscribe({
         next: (event) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] video pause`, event);
           this.audioPause();
         },
       });
@@ -561,7 +551,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       .pipe(takeUntil(this._destroyed$))
       .subscribe({
         next: (event) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] video ended`, event);
           this.audioPause();
           this._mediaElementPlayback.setEnded();
         },
@@ -573,7 +562,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       .pipe(takeUntil(this._destroyed$))
       .subscribe({
         next: (event) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] video seeking`, event);
           this.audioPause();
           this.seekToTime(event.toTime);
         },
@@ -585,7 +573,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       .pipe(takeUntil(this._destroyed$))
       .subscribe({
         next: (event) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] video seeked`, event);
           this.playOrPause();
         },
       });
@@ -596,7 +583,6 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       .pipe(takeUntil(this._destroyed$))
       .subscribe({
         next: (state: MediaElementPlaybackState) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] playback state`, state);
           if (state.playing && !state.waiting && !state.buffering && !state.ended && !state.seeking && !state.pausing) {
             this.audioPlay();
           }
@@ -802,42 +788,22 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
 
   protected audioPlay() {
     if (this._loaded && !this._mediaElementPlayback.playing) {
-      console.log(`[sidecar-audio:${this._audioTrack.id}] audioPlay()`, {
-        currentTime: this._ompAudioElement.mediaElement.currentTime,
-        paused: this._ompAudioElement.mediaElement.paused,
-        readyState: this._ompAudioElement.mediaElement.readyState,
-        audioContextState: this._videoController.getAudioContext().state,
-      });
       this.syncWithVideo();
-      void this._videoController.getAudioContext().resume().then(() => {
-        console.log(`[sidecar-audio:${this._audioTrack.id}] audioContext resumed`, this._videoController.getAudioContext().state);
-      });
+      void this._videoController.getAudioContext().resume();
       this._ompAudioElement.mediaElement
         .play()
         .then(() => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] media play resolved`, {
-            currentTime: this._ompAudioElement.mediaElement.currentTime,
-            paused: this._ompAudioElement.mediaElement.paused,
-            readyState: this._ompAudioElement.mediaElement.readyState,
-            audioContextState: this._videoController.getAudioContext().state,
-          });
           this._mediaElementPlayback.setPlaying();
           this.syncWithVideo();
         })
         .catch((error) => {
-          console.log(`[sidecar-audio:${this._audioTrack.id}] media play rejected`, error);
+          // nop
         });
     }
   }
 
   protected audioPause() {
     try {
-      console.log(`[sidecar-audio:${this._audioTrack.id}] audioPause()`, {
-        currentTime: this._ompAudioElement.mediaElement.currentTime,
-        paused: this._ompAudioElement.mediaElement.paused,
-        readyState: this._ompAudioElement.mediaElement.readyState,
-        audioContextState: this._videoController.getAudioContext().state,
-      });
       this._ompAudioElement.mediaElement.pause();
       this._mediaElementPlayback.setPaused();
     } catch (e) {
@@ -1064,14 +1030,8 @@ export class OmpSidecarBufferedAudio extends BaseOmpSidecarAudio {
     if (this._loaded && !this._mediaElementPlayback.playing) {
       this.stopSourceNode();
       this.createSourceNode();
-
-      console.log(`[sidecar-audio:${this._audioTrack.id}] buffer audioPlay()`, {
-        currentTime: this._videoController.getCurrentTime(),
-        audioContextState: this._videoController.getAudioContext().state,
-      });
-
       void this._videoController.getAudioContext().resume().then(() => {
-        console.log(`[sidecar-audio:${this._audioTrack.id}] buffer audioContext resumed`, this._videoController.getAudioContext().state);
+        // nop
       });
 
       this._audioStartTime = this._videoController.getAudioContext().currentTime;
@@ -1080,22 +1040,12 @@ export class OmpSidecarBufferedAudio extends BaseOmpSidecarAudio {
       this._audioBufferSourceNode!.playbackRate.value = this._videoController.getPlaybackRate();
       this._audioBufferSourceNode!.start(this._audioStartTime, this._audioOffset);
 
-      console.log(`[sidecar-audio:${this._audioTrack.id}] buffer source started`, {
-        startTime: this._audioStartTime,
-        offset: this._audioOffset,
-        playbackRate: this._videoController.getPlaybackRate(),
-      });
-
       this._mediaElementPlayback.setPlaying();
     }
   }
 
   protected audioPause(): void {
     if (this._loaded && this._mediaElementPlayback.playing) {
-      console.log(`[sidecar-audio:${this._audioTrack.id}] buffer audioPause()`, {
-        currentTime: this._videoController.getCurrentTime(),
-        audioContextState: this._videoController.getAudioContext().state,
-      });
       this.stopSourceNode();
       this._mediaElementPlayback.setPaused();
     }
