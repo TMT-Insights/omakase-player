@@ -84,13 +84,32 @@ export interface OmakaseVttCueEvent<T extends OmakaseVttCue> {
   action: 'entry' | 'exit';
 }
 
-export interface SubtitlesVttTrack extends OmakaseTextTrack {
+export type SubtitlesTrackFormat = 'vtt' | 'dfxp' | 'scc';
+
+export interface SubtitlesTrack extends OmakaseTextTrack {
   kind: 'subtitles';
   embedded: boolean;
   contentDigest?: string;
+  format?: SubtitlesTrackFormat;
+}
+
+export interface SubtitlesVttTrack extends SubtitlesTrack {
+  format?: 'vtt';
 }
 
 export type SubtitlesVttTrackCreateType = Partial<SubtitlesVttTrack> & Pick<SubtitlesVttTrack, 'id' | 'src' | 'default' | 'label' | 'language'>;
+
+export interface SubtitlesDfxpTrack extends SubtitlesTrack {
+  format: 'dfxp';
+}
+
+export type SubtitlesDfxpTrackCreateType = Partial<SubtitlesDfxpTrack> & Pick<SubtitlesDfxpTrack, 'id' | 'src' | 'default' | 'label' | 'language'>;
+
+export interface SubtitlesSccTrack extends SubtitlesTrack {
+  format: 'scc';
+}
+
+export type SubtitlesSccTrackCreateType = Partial<SubtitlesSccTrack> & Pick<SubtitlesSccTrack, 'id' | 'src' | 'default' | 'label' | 'language'>;
 
 export interface OmpAudioTrack {
   id: string;

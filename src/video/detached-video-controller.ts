@@ -45,9 +45,14 @@ import {
   SidecarAudioRemoveEvent,
   SidecarAudiosChangeEvent,
   SidecarAudioVolumeChangeEvent,
+  SubtitlesDfxpTrack,
+  SubtitlesDfxpTrackCreateType,
   SubtitlesCreateEvent,
   SubtitlesEvent,
   SubtitlesLoadedEvent,
+  SubtitlesSccTrack,
+  SubtitlesSccTrackCreateType,
+  SubtitlesTrack,
   SubtitlesVttTrack,
   ThumnbailVttUrlChangedEvent,
   VideoBufferingEvent,
@@ -830,6 +835,22 @@ export class DetachedVideoController implements VideoControllerApi {
       .subscribe({
         next: ([request, sendResponseHook]) => {
           sendResponseHook(this._videoController.createSubtitlesVttTrack(request[0]));
+        },
+      });
+
+    this._messageChannel!.createRequestResponseStream('VideoControllerApi.createSubtitlesDfxpTrack')
+      .pipe(takeUntil(this._messageChannelBreaker$))
+      .subscribe({
+        next: ([request, sendResponseHook]) => {
+          sendResponseHook(this._videoController.createSubtitlesDfxpTrack(request[0]));
+        },
+      });
+
+    this._messageChannel!.createRequestResponseStream('VideoControllerApi.createSubtitlesSccTrack')
+      .pipe(takeUntil(this._messageChannelBreaker$))
+      .subscribe({
+        next: ([request, sendResponseHook]) => {
+          sendResponseHook(this._videoController.createSubtitlesSccTrack(request[0]));
         },
       });
 
@@ -1716,11 +1737,19 @@ export class DetachedVideoController implements VideoControllerApi {
     return this._videoController.createSubtitlesVttTrack(subtitlesVttTrack);
   }
 
-  getActiveSubtitlesTrack(): SubtitlesVttTrack | undefined {
+  createSubtitlesDfxpTrack(subtitlesDfxpTrack: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack> {
+    return this._videoController.createSubtitlesDfxpTrack(subtitlesDfxpTrack);
+  }
+
+  createSubtitlesSccTrack(subtitlesSccTrack: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack> {
+    return this._videoController.createSubtitlesSccTrack(subtitlesSccTrack);
+  }
+
+  getActiveSubtitlesTrack(): SubtitlesTrack | undefined {
     return this._videoController.getActiveSubtitlesTrack();
   }
 
-  getSubtitlesTracks(): SubtitlesVttTrack[] {
+  getSubtitlesTracks(): SubtitlesTrack[] {
     return this._videoController.getSubtitlesTracks();
   }
 

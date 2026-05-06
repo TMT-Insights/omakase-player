@@ -35,9 +35,14 @@ import {
   SidecarAudiosChangeEvent,
   SidecarAudioVideoCurrentTimeBufferingEvent,
   SidecarAudioVolumeChangeEvent,
+  SubtitlesDfxpTrack,
+  SubtitlesDfxpTrackCreateType,
   SubtitlesCreateEvent,
   SubtitlesEvent,
   SubtitlesLoadedEvent,
+  SubtitlesSccTrack,
+  SubtitlesSccTrackCreateType,
+  SubtitlesTrack,
   SubtitlesVttTrack,
   SyncTickEvent,
   ThumnbailVttUrlChangedEvent,
@@ -266,8 +271,8 @@ export class VideoController implements VideoControllerApi {
 
   protected _activeNamedEventStreams: OmpNamedEventEventName[] = [];
 
-  protected _subtitlesTracks: Map<string, SubtitlesVttTrack> = new Map<string, SubtitlesVttTrack>();
-  protected _activeSubtitlesTrack?: SubtitlesVttTrack;
+  protected _subtitlesTracks: Map<string, SubtitlesTrack> = new Map<string, SubtitlesTrack>();
+  protected _activeSubtitlesTrack?: SubtitlesTrack;
 
   protected _audioTracks: Map<string, OmpAudioTrack> = new Map<string, OmpAudioTrack>();
 
@@ -484,7 +489,7 @@ export class VideoController implements VideoControllerApi {
           this.onAudioLoaded$.next(void 0); // emit new value, BehaviourSubject
 
           // subtitles
-          this._subtitlesTracks = new Map<string, SubtitlesVttTrack>();
+          this._subtitlesTracks = new Map<string, SubtitlesTrack>();
           this._activeSubtitlesTrack = void 0;
           this.onSubtitlesLoaded$.next(void 0); // emit new value, BehaviourSubject
         }
@@ -2276,13 +2281,24 @@ export class VideoController implements VideoControllerApi {
     });
   }
 
-  protected setSubtitlesTracks(subtitlesVttTracks: SubtitlesVttTrack[]): Observable<void> {
+  protected setSubtitlesTracks(subtitlesVttTracks: SubtitlesTrack[]): Observable<void> {
     return passiveObservable((observer) => {
       this._removeAllSubtitlesTracks(false);
       if (subtitlesVttTracks && subtitlesVttTracks.length > 0) {
-        forkJoin(subtitlesVttTracks.map((p) => this.createSubtitlesVttTrack(p))).subscribe({
-          next: (subtitlesVttTracks) => {
-            this._subtitlesTracks = new Map<string, SubtitlesVttTrack>(subtitlesVttTracks.map((subtitlesVttTrack) => [subtitlesVttTrack.id, subtitlesVttTrack]));
+        forkJoin(
+          subtitlesVttTracks.map((p) => {
+            switch (p.format ?? 'vtt') {
+              case 'dfxp':
+                return this.createSubtitlesDfxpTrack(p as SubtitlesDfxpTrackCreateType) as Observable<SubtitlesTrack>;
+              case 'scc':
+                return this.createSubtitlesSccTrack(p as SubtitlesSccTrackCreateType) as Observable<SubtitlesTrack>;
+              default:
+                return this.createSubtitlesVttTrack(p as SubtitlesVttTrack) as Observable<SubtitlesTrack>;
+            }
+          })
+        ).subscribe({
+          next: (tracks) => {
+            this._subtitlesTracks = new Map<string, SubtitlesTrack>(tracks.map((track) => [track.id, track]));
             this.onSubtitlesLoaded$.next(this.createSubtitlesEvent());
             nextCompleteObserver(observer);
           },
@@ -2298,51 +2314,71 @@ export class VideoController implements VideoControllerApi {
   }
 
   createSubtitlesVttTrack(subtitlesVttTrack: SubtitlesVttTrack): Observable<SubtitlesVttTrack> {
+    return this.createSubtitlesTrack(subtitlesVttTrack) as Observable<SubtitlesVttTrack>;
+  }
+
+  createSubtitlesDfxpTrack(subtitlesDfxpTrack: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack> {
+    return this.createSubtitlesTrack({
+      ...subtitlesDfxpTrack,
+      format: 'dfxp',
+    } as SubtitlesDfxpTrack) as Observable<SubtitlesDfxpTrack>;
+  }
+
+  createSubtitlesSccTrack(subtitlesSccTrack: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack> {
+    return this.createSubtitlesTrack({
+      ...subtitlesSccTrack,
+      format: 'scc',
+    } as SubtitlesSccTrack) as Observable<SubtitlesSccTrack>;
+  }
+
+  protected createSubtitlesTrack(subtitlesTrack: SubtitlesTrack): Observable<SubtitlesTrack> {
     return passiveObservable((observer) => {
-      if (this.isVideoLoaded()) {
-        this._createSubtitlesVttTrack(subtitlesVttTrack).subscribe({
-          next: (value) => {
-            // console.debug('Created subtitles track', subtitlesVttTrack);
-            nextCompleteObserver(observer, value);
-            if (subtitlesVttTrack.default) {
-              let prevDefaultTrack = Array.from(this._subtitlesTracks.values()).find((track) => track.default && track.id !== subtitlesVttTrack.id);
-              if (prevDefaultTrack) {
-                prevDefaultTrack.default = false;
-              }
-              this.showSubtitlesTrack(subtitlesVttTrack.id);
-            }
-          },
-          error: (error) => {
-            console.error(error);
-            errorCompleteObserver(observer, error);
-          },
-        });
-      } else {
+      if (!this.isVideoLoaded()) {
         let message = 'Failed to create subtitles track, video not loaded';
-        console.debug(message, subtitlesVttTrack);
+        console.debug(message, subtitlesTrack);
         errorCompleteObserver(observer, message);
+        return;
       }
+
+      this._createSubtitlesTrack(subtitlesTrack).subscribe({
+        next: (value) => {
+          nextCompleteObserver(observer, value);
+          if (subtitlesTrack.default) {
+            let prevDefaultTrack = Array.from(this._subtitlesTracks.values()).find((track) => track.default && track.id !== subtitlesTrack.id);
+            if (prevDefaultTrack) {
+              prevDefaultTrack.default = false;
+            }
+            this.showSubtitlesTrack(subtitlesTrack.id);
+          }
+        },
+        error: (error) => {
+          console.error(error);
+          errorCompleteObserver(observer, error);
+        },
+      });
     });
   }
 
-  protected _createSubtitlesVttTrack(subtitlesVttTrack: SubtitlesVttTrack): Observable<SubtitlesVttTrack | undefined> {
-    return new Observable<SubtitlesVttTrack>((observer) => {
-      this._removeSubtitlesTrack(subtitlesVttTrack.id);
+  protected _createSubtitlesTrack(subtitlesTrack: SubtitlesTrack): Observable<SubtitlesTrack | undefined> {
+    return new Observable<SubtitlesTrack>((observer) => {
+      this._removeSubtitlesTrack(subtitlesTrack.id);
 
-      if (this._videoDomController.useMediaCaptions()) {
-        this._subtitlesTracks.set(subtitlesVttTrack.id, subtitlesVttTrack);
+      const format = subtitlesTrack.format ?? 'vtt';
+      const useNativeTextTrack = format === 'vtt' && !this._videoDomController.useMediaCaptions();
+
+      if (!useNativeTextTrack) {
+        this._subtitlesTracks.set(subtitlesTrack.id, subtitlesTrack);
         this.onSubtitlesCreate$.next(this.createSubtitlesEvent());
-        nextCompleteObserver(observer, subtitlesVttTrack);
+        nextCompleteObserver(observer, subtitlesTrack);
       } else {
-        this._videoDomController.appendHTMLTrackElement(subtitlesVttTrack).subscribe({
+        this._videoDomController.appendHTMLTrackElement(subtitlesTrack).subscribe({
           next: (element) => {
             if (element) {
-              this._subtitlesTracks.set(subtitlesVttTrack.id, subtitlesVttTrack);
+              this._subtitlesTracks.set(subtitlesTrack.id, subtitlesTrack);
               this.onSubtitlesCreate$.next(this.createSubtitlesEvent());
-              // console.debug('Created subtitles track, track appended to DOM', subtitlesVttTrack);
-              nextCompleteObserver(observer, subtitlesVttTrack);
+              nextCompleteObserver(observer, subtitlesTrack);
             } else {
-              let message = `Failed to create subtitles track, appending to DOM failed for ${JSON.stringify(subtitlesVttTrack)}`;
+              let message = `Failed to create subtitles track, appending to DOM failed for ${JSON.stringify(subtitlesTrack)}`;
               console.debug(message);
               errorCompleteObserver(observer, message);
             }
@@ -2355,7 +2391,7 @@ export class VideoController implements VideoControllerApi {
     });
   }
 
-  getSubtitlesTracks(): SubtitlesVttTrack[] {
+  getSubtitlesTracks(): SubtitlesTrack[] {
     return this.isVideoLoaded() ? [...this._subtitlesTracks.values()] : [];
   }
 
@@ -2396,7 +2432,7 @@ export class VideoController implements VideoControllerApi {
     }
   }
 
-  getActiveSubtitlesTrack(): SubtitlesVttTrack | undefined {
+  getActiveSubtitlesTrack(): SubtitlesTrack | undefined {
     return this._activeSubtitlesTrack;
   }
 
@@ -2413,22 +2449,23 @@ export class VideoController implements VideoControllerApi {
           }
         }
 
-        let subtitlesVttTrack = this._subtitlesTracks.get(id);
+        let subtitlesTrack = this._subtitlesTracks.get(id);
 
-        if (subtitlesVttTrack) {
-          if (this._videoDomController.useMediaCaptions()) {
-            subtitlesVttTrack.hidden = false;
-            this._activeSubtitlesTrack = subtitlesVttTrack;
+        if (subtitlesTrack) {
+          const format = subtitlesTrack.format ?? 'vtt';
+          if (format !== 'vtt' || this._videoDomController.useMediaCaptions()) {
+            subtitlesTrack.hidden = false;
+            this._activeSubtitlesTrack = subtitlesTrack;
 
             this.onSubtitlesShow$.next(this.createSubtitlesEvent());
           } else {
-            let textTrack = this._videoDomController.getTextTrackById(subtitlesVttTrack.id);
+            let textTrack = this._videoDomController.getTextTrackById(subtitlesTrack.id);
 
             if (textTrack) {
               textTrack.mode = 'showing';
-              subtitlesVttTrack.hidden = false;
+              subtitlesTrack.hidden = false;
 
-              this._activeSubtitlesTrack = subtitlesVttTrack;
+              this._activeSubtitlesTrack = subtitlesTrack;
 
               this.onSubtitlesShow$.next(this.createSubtitlesEvent());
             }
@@ -2446,7 +2483,7 @@ export class VideoController implements VideoControllerApi {
       if (this.isVideoLoaded()) {
         let track = this._subtitlesTracks.get(id);
         if (track) {
-          if (this._videoDomController.useMediaCaptions()) {
+          if ((track.format ?? 'vtt') !== 'vtt' || this._videoDomController.useMediaCaptions()) {
             track.hidden = true;
             this.onSubtitlesHide$.next(this.createSubtitlesEvent());
           } else {

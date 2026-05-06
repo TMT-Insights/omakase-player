@@ -60,12 +60,13 @@ import {nullifier} from '../util/destroy-util';
 import {DomController} from '../dom/dom-controller';
 import {HTMLVideoElementEvents} from '../media-element/omp-media-element';
 import {FileUtil} from './../util/file-util';
-import {CaptionsRenderer, parseResponse} from 'media-captions';
+import {CaptionsRenderer} from 'media-captions';
 // @ts-ignore
 import playerChromingStyle from '../../style/player-chroming/player-chroming.css?raw';
 // @ts-ignore
 import captionStyle from '../../node_modules/media-captions/styles/captions.css?raw';
-import {SubtitlesVttTrack} from '../types';
+import {SubtitlesTrack} from '../types';
+import {loadSubtitleCaptionsTrack} from '../subtitles/subtitle-captions-util';
 
 export interface PlayerChromingDomControllerConfig {
   playerHTMLElementId: string;
@@ -1478,8 +1479,8 @@ export class PlayerChromingDomController extends DomController implements Player
     return `omakase-control-bar-${element.toLowerCase()}`;
   }
 
-  private showCaptions(track: SubtitlesVttTrack) {
-    from(parseResponse(fetch(track.src)))
+  private showCaptions(track: SubtitlesTrack) {
+    from(loadSubtitleCaptionsTrack(track))
       .pipe(takeUntil(this._subtitleEventBreaker$))
       .subscribe({
         next: ({regions, cues}) => {

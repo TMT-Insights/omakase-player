@@ -37,9 +37,14 @@ import {
   SidecarAudioRemoveEvent,
   SidecarAudiosChangeEvent,
   SidecarAudioVolumeChangeEvent,
+  SubtitlesDfxpTrack,
+  SubtitlesDfxpTrackCreateType,
   SubtitlesCreateEvent,
   SubtitlesEvent,
   SubtitlesLoadedEvent,
+  SubtitlesSccTrack,
+  SubtitlesSccTrackCreateType,
+  SubtitlesTrack,
   SubtitlesVttTrack,
   ThumnbailVttUrlChangedEvent,
   VideoBufferingEvent,
@@ -110,8 +115,8 @@ export class RemoteVideoController implements VideoControllerApi {
   private _videoSafeZones: VideoSafeZone[] = [];
   private _videoHelpMenuGroups: HelpMenuGroup[] = [];
   private _bufferedTimespans: BufferedTimespan[] = [];
-  private _subtitlesTracks: SubtitlesVttTrack[] = [];
-  private _activeSubtitlesTrack: SubtitlesVttTrack | undefined;
+  private _subtitlesTracks: SubtitlesTrack[] = [];
+  private _activeSubtitlesTrack: SubtitlesTrack | undefined;
   private _audioTracks: OmpAudioTrack[] = [];
   private _activeAudioTrack: OmpAudioTrack | undefined = void 0;
   private _sidecarAudioStates: OmpSidecarAudioState[] = [];
@@ -763,11 +768,19 @@ export class RemoteVideoController implements VideoControllerApi {
     return fromPromise(firstValueFrom(this._messageChannel.sendAndObserveResponse('VideoControllerApi.createSubtitlesVttTrack', [subtitlesVttTrack])));
   }
 
-  getSubtitlesTracks(): SubtitlesVttTrack[] {
+  createSubtitlesDfxpTrack(subtitlesDfxpTrack: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack> {
+    return fromPromise(firstValueFrom(this._messageChannel.sendAndObserveResponse('VideoControllerApi.createSubtitlesDfxpTrack', [subtitlesDfxpTrack])));
+  }
+
+  createSubtitlesSccTrack(subtitlesSccTrack: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack> {
+    return fromPromise(firstValueFrom(this._messageChannel.sendAndObserveResponse('VideoControllerApi.createSubtitlesSccTrack', [subtitlesSccTrack])));
+  }
+
+  getSubtitlesTracks(): SubtitlesTrack[] {
     return this._subtitlesTracks;
   }
 
-  getActiveSubtitlesTrack(): SubtitlesVttTrack | undefined {
+  getActiveSubtitlesTrack(): SubtitlesTrack | undefined {
     return this._activeSubtitlesTrack;
   }
 

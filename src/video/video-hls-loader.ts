@@ -461,6 +461,7 @@ export class VideoHlsLoader extends BaseVideoLoader {
                         hidden: true,
                         default: result.mediaPlaylist.default,
                         embedded: true,
+                        format: 'vtt',
                         contentDigest: result.webvttTextDigest,
                         src: VttUtil.createWebvttBlob(result.webvttText!),
                         language: result.mediaPlaylist.lang ? result.mediaPlaylist.lang : 'n/a',

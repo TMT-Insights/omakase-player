@@ -14,7 +14,19 @@
  * limitations under the License.
  */
 
-import {Destroyable, SubtitlesCreateEvent, SubtitlesEvent, SubtitlesLoadedEvent, SubtitlesVttTrack, SubtitlesVttTrackCreateType} from '../types';
+import {
+  Destroyable,
+  SubtitlesCreateEvent,
+  SubtitlesDfxpTrack,
+  SubtitlesDfxpTrackCreateType,
+  SubtitlesEvent,
+  SubtitlesLoadedEvent,
+  SubtitlesSccTrack,
+  SubtitlesSccTrackCreateType,
+  SubtitlesTrack,
+  SubtitlesVttTrack,
+  SubtitlesVttTrackCreateType,
+} from '../types';
 import {BehaviorSubject, Observable, Subject} from 'rxjs';
 import {SubtitlesApi} from '../api';
 import {nextCompleteObserver, nextCompleteSubject, passiveObservable} from '../util/rxjs-util';
@@ -52,10 +64,35 @@ export class SubtitlesController implements SubtitlesApi, Destroyable {
       hidden: true,
       kind: 'subtitles',
       embedded: false,
+      format: 'vtt',
     });
   }
 
-  getTracks(): SubtitlesVttTrack[] {
+  createDfxpTrack(track: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack> {
+    return this._videoController.createSubtitlesDfxpTrack({
+      ...track,
+      id: isNullOrUndefined(track.id) ? CryptoUtil.uuid() : track.id,
+      default: track.default ? track.default : false,
+      hidden: true,
+      kind: 'subtitles',
+      embedded: false,
+      format: 'dfxp',
+    });
+  }
+
+  createSccTrack(track: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack> {
+    return this._videoController.createSubtitlesSccTrack({
+      ...track,
+      id: isNullOrUndefined(track.id) ? CryptoUtil.uuid() : track.id,
+      default: track.default ? track.default : false,
+      hidden: true,
+      kind: 'subtitles',
+      embedded: false,
+      format: 'scc',
+    });
+  }
+
+  getTracks(): SubtitlesTrack[] {
     return this._videoController.getSubtitlesTracks();
   }
 
@@ -79,7 +116,7 @@ export class SubtitlesController implements SubtitlesApi, Destroyable {
     });
   }
 
-  getActiveTrack(): SubtitlesVttTrack | undefined {
+  getActiveTrack(): SubtitlesTrack | undefined {
     return this._videoController.getActiveSubtitlesTrack();
   }
 

@@ -25,7 +25,18 @@ import {SwitchableVideoController} from './switchable-video-controller';
 import {WindowUtil} from '../util/window-util';
 import {HandshakeChannelActionsMap, MessageChannelActionsMap} from './channel-types';
 import {MainAudioEffects, OmpSidecarAudioInputSoloMuteState, OmpSidecarAudioState, Video, VideoLoadOptions, VideoLoadOptionsInternal, VideoSafeZone, VideoWindowPlaybackState} from './model';
-import {HelpMenuGroup, MainAudioChangeEvent, MainAudioInputSoloMuteEvent, OmpAudioTrack, OmpError, OmpNamedEventEventName, SubtitlesVttTrack} from '../types';
+import {
+  HelpMenuGroup,
+  MainAudioChangeEvent,
+  MainAudioInputSoloMuteEvent,
+  OmpAudioTrack,
+  OmpError,
+  OmpNamedEventEventName,
+  SubtitlesDfxpTrackCreateType,
+  SubtitlesSccTrackCreateType,
+  SubtitlesTrack,
+  SubtitlesVttTrack,
+} from '../types';
 import {CryptoUtil} from '../util/crypto-util';
 import {StringUtil} from '../util/string-util';
 import {OmpAudioEffectsGraphDef} from '../audio';
@@ -36,8 +47,8 @@ interface VideoControllerState {
   videoLoadOptions: VideoLoadOptions | undefined;
   isPlaying: boolean;
   currentTime: number;
-  subtitlesTracks: SubtitlesVttTrack[];
-  activeSubtitlesTrack: SubtitlesVttTrack | undefined;
+  subtitlesTracks: SubtitlesTrack[];
+  activeSubtitlesTrack: SubtitlesTrack | undefined;
   activeAudioTrack: OmpAudioTrack | undefined;
   videoSafeZones: VideoSafeZone[];
   helpMenuGroups: HelpMenuGroup[];
@@ -127,6 +138,17 @@ export class DetachableVideoController extends SwitchableVideoController {
     this.onVideoWindowPlaybackStateChange$.next({
       videoWindowPlaybackState: state,
     });
+  }
+
+  private createSubtitlesTrackByFormat(subtitlesTrack: SubtitlesTrack): Observable<SubtitlesTrack> {
+    switch (subtitlesTrack.format ?? 'vtt') {
+      case 'dfxp':
+        return this.createSubtitlesDfxpTrack(subtitlesTrack as SubtitlesDfxpTrackCreateType) as Observable<SubtitlesTrack>;
+      case 'scc':
+        return this.createSubtitlesSccTrack(subtitlesTrack as SubtitlesSccTrackCreateType) as Observable<SubtitlesTrack>;
+      default:
+        return this.createSubtitlesVttTrack(subtitlesTrack as SubtitlesVttTrack) as Observable<SubtitlesTrack>;
+    }
   }
 
   override isDetachable(): boolean {
@@ -680,16 +702,16 @@ export class DetachableVideoController extends SwitchableVideoController {
 
                   if (subtitlesForCreation.length > 0) {
                     forkJoin(
-                      subtitlesForCreation.map((subtitlesVttTrack) =>
-                        this.createSubtitlesVttTrack(subtitlesVttTrack).pipe(
+                      subtitlesForCreation.map((subtitlesTrack) =>
+                        this.createSubtitlesTrackByFormat(subtitlesTrack).pipe(
                           map((p) => ({
-                            subtitlesVttTrack: subtitlesVttTrack,
+                            subtitlesTrack: subtitlesTrack,
                             created: true,
                           })),
                           catchError((error) => {
                             console.error(error);
                             return of({
-                              subtitlesVttTrack: subtitlesVttTrack,
+                              subtitlesTrack: subtitlesTrack,
                               created: false,
                             });
                           })
@@ -699,12 +721,12 @@ export class DetachableVideoController extends SwitchableVideoController {
                       next: (result) => {
                         console.debug(
                           `Created subtitles:`,
-                          result.filter((p) => p.created).map((p) => p.subtitlesVttTrack.id)
+                          result.filter((p) => p.created).map((p) => p.subtitlesTrack.id)
                         );
 
                         console.debug(
                           `Subtitles failed to create:`,
-                          result.filter((p) => !p.created).map((p) => p.subtitlesVttTrack.id)
+                          result.filter((p) => !p.created).map((p) => p.subtitlesTrack.id)
                         );
 
                         nextCompleteObserver(observer);

@@ -18,7 +18,7 @@ import {HelpMenuGroup, MomentObservation, PeriodObservation} from './model';
 import {Thumbnail} from '../timeline/thumbnail/thumbnail';
 import {OmakaseChartCue} from './chart';
 import {MarkerApi} from '../api';
-import {OmakaseTextTrackCue, OmpAudioTrack, SubtitlesVttTrack} from './track';
+import {OmakaseTextTrackCue, OmpAudioTrack, SubtitlesTrack} from './track';
 import {Video, VideoLoadOptions} from '../video';
 import {
   BufferedTimespan,
@@ -349,8 +349,8 @@ export interface SidecarAudioInputSoloMuteEvent extends AudioEvent {
 // region subtitles
 
 export interface SubtitlesEvent extends OmpEvent {
-  tracks: SubtitlesVttTrack[];
-  currentTrack: SubtitlesVttTrack | undefined;
+  tracks: SubtitlesTrack[];
+  currentTrack: SubtitlesTrack | undefined;
 }
 
 export interface SubtitlesLoadedEvent extends SubtitlesEvent {}

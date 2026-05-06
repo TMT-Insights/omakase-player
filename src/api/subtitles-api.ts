@@ -16,7 +16,18 @@
 
 import {Api} from './api';
 import {Observable} from 'rxjs';
-import {SubtitlesCreateEvent, SubtitlesEvent, SubtitlesLoadedEvent, SubtitlesVttTrack, SubtitlesVttTrackCreateType} from '../types';
+import {
+  SubtitlesCreateEvent,
+  SubtitlesDfxpTrack,
+  SubtitlesDfxpTrackCreateType,
+  SubtitlesEvent,
+  SubtitlesLoadedEvent,
+  SubtitlesSccTrack,
+  SubtitlesSccTrackCreateType,
+  SubtitlesTrack,
+  SubtitlesVttTrack,
+  SubtitlesVttTrackCreateType,
+} from '../types';
 
 export interface SubtitlesApi extends Api {
   /**
@@ -57,10 +68,14 @@ export interface SubtitlesApi extends Api {
    */
   createVttTrack(track: SubtitlesVttTrackCreateType): Observable<SubtitlesVttTrack>;
 
+  createDfxpTrack(track: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack>;
+
+  createSccTrack(track: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack>;
+
   /**
    * @returns all VTT tracks
    */
-  getTracks(): SubtitlesVttTrack[];
+  getTracks(): SubtitlesTrack[];
 
   /**
    * Removes VTT track by ID
@@ -76,7 +91,7 @@ export interface SubtitlesApi extends Api {
   /**
    * @returns active VTT track
    */
-  getActiveTrack(): SubtitlesVttTrack | undefined;
+  getActiveTrack(): SubtitlesTrack | undefined;
 
   /**
    * Shows VTT track by ID
