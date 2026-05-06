@@ -861,38 +861,13 @@ export class VideoController implements VideoControllerApi {
 
     this.onVideoTimeChange$.pipe(takeUntil(this._videoEventBreaker$)).subscribe({
       next: () => {
-        // pauses video if waitingSyncedMedia is set and video is playing
-        if (this._mediaElementPlayback && this._mediaElementPlayback.waitingSyncedMedia && this.isPlaying()) {
-          this._pause();
-        }
+        // sidecar audio buffering no longer pauses the main video clock
       },
     });
 
     this.onSidecarAudioVideoCurrentTimeBuffering$.pipe(takeUntil(this._videoEventBreaker$)).subscribe({
       next: (event) => {
-        if (event.buffering) {
-          this._sidecarAudiosVideoCurrentTimeBuffering.add(event.sidecarAudioState.audioTrack.id);
-        } else {
-          this._sidecarAudiosVideoCurrentTimeBuffering.delete(event.sidecarAudioState.audioTrack.id);
-        }
-
-        if (this._mediaElementPlayback) {
-          let setWaitingSyncedMedia = !this._mediaElementPlayback.waitingSyncedMedia && this._sidecarAudiosVideoCurrentTimeBuffering.size > 0;
-          let unsetWaitingSyncedMedia = this._mediaElementPlayback.waitingSyncedMedia && this._sidecarAudiosVideoCurrentTimeBuffering.size === 0;
-
-          if (setWaitingSyncedMedia) {
-            this._mediaElementPlayback.waitingSyncedMedia = true;
-            this._waitingSyncedMediaLastPlaybackState = this.getPlaybackState();
-          } else if (unsetWaitingSyncedMedia) {
-            this._mediaElementPlayback!.waitingSyncedMedia = false;
-            if (this._waitingSyncedMediaLastPlaybackState) {
-              if (this._waitingSyncedMediaLastPlaybackState.playing && !this.isPlaying()) {
-                this.play();
-              }
-            }
-          }
-          // console.debug(`Waiting synced media: ${this._mediaElementPlayback.waitingSyncedMedia} ${this._mediaElementPlayback.waitingSyncedMedia ? Array.from(this._sidecarAudiosVideoCurrentTimeBuffering) : ''}`)
-        }
+        // keep buffering state local to the sidecar audio stream; do not gate video playback on it
       },
     });
 
@@ -3455,6 +3430,9 @@ export class VideoController implements VideoControllerApi {
 
       if (newActiveSidecarAudioTracks.length > 0 || newInactiveSidecarAudioTracks.length > 0) {
         this._activateSidecarAudioTracks(newActiveSidecarAudioTracks.map((p) => p.id));
+        if (this._config.audioPlayMode === 'single') {
+          this.deactivateMainAudio();
+        }
         this._deactivateSidecarAudioTracks(newInactiveSidecarAudioTracks.map((p) => p.id));
       }
 

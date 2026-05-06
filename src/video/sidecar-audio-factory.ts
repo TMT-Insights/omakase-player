@@ -17,16 +17,10 @@
 import {SidecarAudioApi} from '../api/sidecar-audio-api';
 import {VideoControllerApi} from './video-controller-api';
 import {OmpAudioTrack} from '../types';
-import {BrowserProvider} from '../common/browser-provider';
-import {OmpSidecarAudio, OmpSidecarBufferedAudio} from './sidecar-audio';
+import {OmpSidecarBufferedAudio} from './sidecar-audio';
 
 export class SidecarAudioFactory {
   public static createSidecarAudio(videoController: VideoControllerApi, sidecarAudioTrack: OmpAudioTrack): SidecarAudioApi {
-    // return new OmpSidecarBufferedAudio(videoController, sidecarAudioTrack);
-    if (BrowserProvider.instance().isSafari) {
-      return new OmpSidecarBufferedAudio(videoController, sidecarAudioTrack);
-    } else {
-      return new OmpSidecarAudio(videoController, sidecarAudioTrack);
-    }
+    return new OmpSidecarBufferedAudio(videoController, sidecarAudioTrack);
   }
 }

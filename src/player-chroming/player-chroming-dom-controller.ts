@@ -506,6 +506,7 @@ export class PlayerChromingDomController extends DomController implements Player
         <div class="${this._domClasses.timecodeContainer} d-none" slot="middle-chrome" ${this._config.playerChroming.themeConfig?.alwaysOnFloatingControls?.includes(DefaultThemeFloatingControl.Time) ? 'noautohide' : ''}>
             <omakase-time-display format="${this._config.playerChroming.themeConfig?.timeFormat === 'TIMECODE' ? 'timecode' : 'standard'}" ${this._config.playerChroming.themeConfig?.timeFormat === 'COUNTDOWN_TIMER' ? 'countdown ' : ''} class="${this._domClasses.mediaChromeCurrentTimecode}"></omakase-time-display>
         </div>
+        <div class="${this._domClasses.captions}" noautohide></div>
         <media-control-bar class="upper-control-bar">
             <omakase-marker-bar></omakase-marker-bar>
               <omakase-time-range class="${this.getControlBarClass(DefaultThemeControl.Scrubber)}">
@@ -1277,7 +1278,7 @@ export class PlayerChromingDomController extends DomController implements Player
               label: track.label,
               active: event?.currentTrack?.id === track.id,
             }));
-            if (this._config.playerChroming.theme === PlayerChromingTheme.Audio) {
+            if (this._videoController.getSubtitlesTracks().length > 0) {
               textOptions.unshift({
                 value: '',
                 label: 'Off',
