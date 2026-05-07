@@ -14,12 +14,44 @@
  * limitations under the License.
  */
 
-import {parseResponse} from 'media-captions';
+import {parseResponse, VTTCue, VTTRegion} from 'media-captions';
 import {SubtitlesTrack} from '../types';
 
 export interface SubtitleCaptionsTrack {
   regions: any[];
   cues: any[];
+}
+
+interface TtmlStyle {
+  fontStyle?: string;
+  fontWeight?: string;
+  fontFamily?: string;
+  fontSize?: string;
+  color?: string;
+  backgroundColor?: string;
+  textAlign?: string;
+  textDecoration?: string;
+  textOutline?: string;
+  lineHeight?: string;
+  displayAlign?: string;
+  origin?: string;
+  extent?: string;
+}
+
+interface TtmlRegion {
+  id: string;
+  vttRegion: VTTRegion;
+  width?: number;
+  lines?: number;
+  regionAnchorX?: number;
+  regionAnchorY?: number;
+  viewportAnchorX?: number;
+  viewportAnchorY?: number;
+  scroll?: '' | 'up';
+  origin?: string;
+  extent?: string;
+  displayAlign?: string;
+  textAlign?: string;
 }
 
 export async function loadSubtitleCaptionsTrack(track: SubtitlesTrack): Promise<SubtitleCaptionsTrack> {
@@ -32,10 +64,7 @@ export async function loadSubtitleCaptionsTrack(track: SubtitlesTrack): Promise<
   const text = await (await fetch(track.src)).text();
 
   if (format === 'dfxp') {
-    return {
-      regions: [],
-      cues: parseDfxpToCues(text),
-    };
+    return parseDfxpToTrack(text);
   }
 
   return {
@@ -44,12 +73,14 @@ export async function loadSubtitleCaptionsTrack(track: SubtitlesTrack): Promise<
   };
 }
 
-function parseDfxpToCues(text: string): VTTCue[] {
+function parseDfxpToTrack(text: string): SubtitleCaptionsTrack {
   const doc = new DOMParser().parseFromString(text, 'application/xml');
   if (doc.getElementsByTagName('parsererror').length > 0 || doc.documentElement?.nodeName === 'parsererror') {
     throw new Error('Failed to parse DFXP captions');
   }
 
+  const styles = parseTtmlStyles(doc);
+  const regions = parseTtmlRegions(doc);
   const cues: VTTCue[] = [];
   Array.from(doc.getElementsByTagName('p')).forEach((p, index) => {
     const begin = parseTimedTextClockValue(p.getAttribute('begin') ?? p.getAttribute('start') ?? '');
@@ -61,17 +92,24 @@ function parseDfxpToCues(text: string): VTTCue[] {
       return;
     }
 
-    const textContent = normalizeCueText(extractDfxpText(p));
+    const mergedStyle = resolveInheritedTtmlStyle(p, styles);
+    const region = getDfxpRegion(p, regions, mergedStyle);
+
+    const textContent = normalizeCueText(extractDfxpText(p, styles));
     if (!textContent) {
       return;
     }
 
     const cue = new VTTCue(begin, end, textContent);
     cue.id = `${index}`;
+    applyTtmlCueStyle(cue, p, mergedStyle, region);
     cues.push(cue);
   });
 
-  return cues;
+  return {
+    regions: Array.from(regions.values()).map((region) => region.vttRegion),
+    cues,
+  };
 }
 
 function parseSccToCues(text: string): VTTCue[] {
@@ -113,6 +151,372 @@ function parseSccToCues(text: string): VTTCue[] {
       return cue;
     })
     .filter((cue): cue is VTTCue => !!cue);
+}
+
+function parseTtmlStyles(doc: Document): Map<string, TtmlStyle> {
+  const styles = new Map<string, TtmlStyle>();
+
+  Array.from(doc.getElementsByTagName('style')).forEach((styleElement) => {
+    const id = getAttrAny(styleElement, ['xml:id', 'id']);
+    if (!id) {
+      return;
+    }
+
+    styles.set(id, {
+      fontStyle: getAttrAny(styleElement, ['tts:fontStyle', 'fontStyle']) ?? undefined,
+      fontWeight: getAttrAny(styleElement, ['tts:fontWeight', 'fontWeight']) ?? undefined,
+      fontFamily: getAttrAny(styleElement, ['tts:fontFamily', 'fontFamily']) ?? undefined,
+      fontSize: getAttrAny(styleElement, ['tts:fontSize', 'fontSize']) ?? undefined,
+      color: getAttrAny(styleElement, ['tts:color', 'color']) ?? undefined,
+      backgroundColor: getAttrAny(styleElement, ['tts:backgroundColor', 'backgroundColor']) ?? undefined,
+      textAlign: getAttrAny(styleElement, ['tts:textAlign', 'textAlign']) ?? undefined,
+      textDecoration: getAttrAny(styleElement, ['tts:textDecoration', 'textDecoration']) ?? undefined,
+      textOutline: getAttrAny(styleElement, ['tts:textOutline', 'textOutline']) ?? undefined,
+      lineHeight: getAttrAny(styleElement, ['tts:lineHeight', 'lineHeight']) ?? undefined,
+      displayAlign: getAttrAny(styleElement, ['tts:displayAlign', 'displayAlign']) ?? undefined,
+      origin: getAttrAny(styleElement, ['tts:origin', 'origin']) ?? undefined,
+      extent: getAttrAny(styleElement, ['tts:extent', 'extent']) ?? undefined,
+    });
+  });
+
+  return styles;
+}
+
+function parseTtmlRegions(doc: Document): Map<string, TtmlRegion> {
+  const regions = new Map<string, TtmlRegion>();
+
+  Array.from(doc.getElementsByTagName('region')).forEach((regionElement) => {
+    const id = getAttrAny(regionElement, ['xml:id', 'id']);
+    if (!id) {
+      return;
+    }
+
+    const vttRegion = new VTTRegion();
+    const geometry = parseTtmlRegionGeometry(
+      getAttrAny(regionElement, ['tts:origin', 'origin']) ?? undefined,
+      getAttrAny(regionElement, ['tts:extent', 'extent']) ?? undefined,
+      getAttrAny(regionElement, ['tts:displayAlign', 'displayAlign']) ?? undefined,
+    );
+    vttRegion.id = id;
+    vttRegion.width = geometry.width ?? 100;
+    vttRegion.lines = geometry.lines ?? 3;
+    vttRegion.regionAnchorX = geometry.regionAnchorX ?? 0;
+    vttRegion.regionAnchorY = geometry.regionAnchorY ?? 0;
+    vttRegion.viewportAnchorX = geometry.viewportAnchorX ?? 0;
+    vttRegion.viewportAnchorY = geometry.viewportAnchorY ?? 0;
+    vttRegion.scroll = geometry.scroll ?? '';
+
+    regions.set(id, {
+      id,
+      vttRegion,
+      ...geometry,
+      origin: getAttrAny(regionElement, ['tts:origin', 'origin']) ?? undefined,
+      extent: getAttrAny(regionElement, ['tts:extent', 'extent']) ?? undefined,
+      displayAlign: getAttrAny(regionElement, ['tts:displayAlign', 'displayAlign']) ?? undefined,
+      textAlign: getAttrAny(regionElement, ['tts:textAlign', 'textAlign']) ?? undefined,
+    });
+  });
+
+  return regions;
+}
+
+function parseTtmlRegionGeometry(
+  originValue?: string,
+  extentValue?: string,
+  displayAlignValue?: string,
+): Pick<TtmlRegion, 'width' | 'lines' | 'regionAnchorX' | 'regionAnchorY' | 'viewportAnchorX' | 'viewportAnchorY' | 'scroll'> {
+  const origin = parseTtmlPair(originValue);
+  const extent = parseTtmlPair(extentValue);
+  const displayAlign = (displayAlignValue ?? '').toLowerCase();
+  const alignFraction = displayAlign === 'after' ? 1 : displayAlign === 'center' ? 0.5 : 0;
+
+  return {
+    width: extent?.x,
+    lines: 3,
+    regionAnchorX: 0,
+    regionAnchorY: alignFraction * 100,
+    viewportAnchorX: origin?.x,
+    viewportAnchorY: origin && extent ? origin.y + extent.y * alignFraction : origin?.y,
+    scroll: '',
+  };
+}
+
+function mergeTtmlStyles(styleRefs: string, element: Element, styles: Map<string, TtmlStyle>): TtmlStyle {
+  const merged: TtmlStyle = {};
+
+  styleRefs
+    .split(/\s+/)
+    .map((id) => id.trim())
+    .filter((id) => !!id)
+    .forEach((id) => {
+      Object.assign(merged, styles.get(id) ?? {});
+    });
+
+  const directStyle = ttmlStyleFromElement(element);
+  Object.assign(merged, directStyle);
+
+  return merged;
+}
+
+function ttmlStyleFromElement(element: Element): TtmlStyle {
+  return {
+    fontStyle: getAttrAny(element, ['tts:fontStyle', 'fontStyle']) ?? undefined,
+    fontWeight: getAttrAny(element, ['tts:fontWeight', 'fontWeight']) ?? undefined,
+    fontFamily: getAttrAny(element, ['tts:fontFamily', 'fontFamily']) ?? undefined,
+    fontSize: getAttrAny(element, ['tts:fontSize', 'fontSize']) ?? undefined,
+    color: getAttrAny(element, ['tts:color', 'color']) ?? undefined,
+    backgroundColor: getAttrAny(element, ['tts:backgroundColor', 'backgroundColor']) ?? undefined,
+    textAlign: getAttrAny(element, ['tts:textAlign', 'textAlign']) ?? undefined,
+    textDecoration: getAttrAny(element, ['tts:textDecoration', 'textDecoration']) ?? undefined,
+    textOutline: getAttrAny(element, ['tts:textOutline', 'textOutline']) ?? undefined,
+    lineHeight: getAttrAny(element, ['tts:lineHeight', 'lineHeight']) ?? undefined,
+    displayAlign: getAttrAny(element, ['tts:displayAlign', 'displayAlign']) ?? undefined,
+    origin: getAttrAny(element, ['tts:origin', 'origin']) ?? undefined,
+    extent: getAttrAny(element, ['tts:extent', 'extent']) ?? undefined,
+  };
+}
+
+function getDfxpRegion(p: Element, regions: Map<string, TtmlRegion>, style: TtmlStyle): TtmlRegion | undefined {
+  const regionId = getAttrAny(p, ['region']) ?? undefined;
+  const region = regionId ? regions.get(regionId) : undefined;
+
+  if (region) {
+    return region;
+  }
+
+  if (!parseTtmlPair(style.origin) || !parseTtmlPair(style.extent)) {
+    return void 0;
+  }
+
+  const geometry = parseTtmlRegionGeometry(style.origin, style.extent, style.displayAlign);
+
+  return {
+    id: `cue-${p.getAttribute('xml:id') ?? p.getAttribute('id') ?? ''}`,
+    vttRegion: toVttRegion({
+      id: `cue-${p.getAttribute('xml:id') ?? p.getAttribute('id') ?? ''}`,
+      ...geometry,
+    }),
+    ...geometry,
+    origin: style.origin,
+    extent: style.extent,
+    displayAlign: style.displayAlign,
+    textAlign: style.textAlign,
+  };
+}
+
+function applyTtmlCueStyle(cue: VTTCue, p: Element, style: TtmlStyle, region?: TtmlRegion) {
+  const origin = parseTtmlPair(region?.origin ?? style.origin);
+  const extent = parseTtmlPair(region?.extent ?? style.extent);
+  const textAlign = normalizeTextAlign(getAttrAny(p, ['tts:textAlign', 'textAlign']) ?? region?.textAlign ?? style.textAlign);
+  const displayAlign = region?.displayAlign ?? style.displayAlign;
+
+  if (origin && extent) {
+    cue.snapToLines = false;
+    cue.position = origin.x + extent.x / 2;
+    cue.size = extent.x;
+    cue.line = resolveTtmlLine(origin.y, extent.y, displayAlign);
+    cue.lineAlign = resolveTtmlLineAlign(displayAlign);
+    cue.positionAlign = 'center';
+  }
+
+  cue.align = textAlign;
+  cue.style = {
+    ...(style.fontFamily ? {'font-family': style.fontFamily} : {}),
+    ...(style.fontSize ? {'font-size': style.fontSize} : {}),
+    ...(style.fontStyle ? {'font-style': style.fontStyle} : {}),
+    ...(style.fontWeight ? {'font-weight': style.fontWeight} : {}),
+    ...(style.color ? {color: style.color} : {}),
+    ...(style.backgroundColor ? {'background-color': style.backgroundColor} : {}),
+    ...(style.lineHeight ? {'line-height': style.lineHeight} : {}),
+    ...(style.textDecoration ? {'text-decoration': style.textDecoration} : {}),
+    ...(style.textOutline ? {'text-shadow': textOutlineToTextShadow(style.textOutline)} : {}),
+  };
+}
+
+function resolveInheritedTtmlStyle(element: Element, styles: Map<string, TtmlStyle>): TtmlStyle {
+  const chain: Element[] = [];
+  let current: Element | null = element;
+
+  while (current) {
+    chain.push(current);
+    current = current.parentElement;
+  }
+
+  return chain
+    .reverse()
+    .reduce<TtmlStyle>((acc, node) => Object.assign(acc, mergeTtmlStyles(getAttrAny(node, ['style']) ?? '', node, styles)), {});
+}
+
+function toVttRegion(region: Pick<TtmlRegion, 'id' | 'width' | 'lines' | 'regionAnchorX' | 'regionAnchorY' | 'viewportAnchorX' | 'viewportAnchorY' | 'scroll'>): VTTRegion {
+  const vttRegion = new VTTRegion();
+  vttRegion.id = region.id;
+  vttRegion.width = region.width ?? 100;
+  vttRegion.lines = region.lines ?? 3;
+  vttRegion.regionAnchorX = region.regionAnchorX ?? 0;
+  vttRegion.regionAnchorY = region.regionAnchorY ?? 0;
+  vttRegion.viewportAnchorX = region.viewportAnchorX ?? 0;
+  vttRegion.viewportAnchorY = region.viewportAnchorY ?? 0;
+  vttRegion.scroll = region.scroll ?? '';
+  return vttRegion;
+}
+
+function resolveTtmlLine(originY: number, extentY: number, displayAlign?: string): number {
+  switch ((displayAlign ?? '').toLowerCase()) {
+    case 'before':
+      return originY;
+    case 'center':
+      return originY + extentY / 2;
+    case 'after':
+    default:
+      return originY + extentY;
+  }
+}
+
+function resolveTtmlLineAlign(displayAlign?: string): 'start' | 'center' | 'end' {
+  switch ((displayAlign ?? '').toLowerCase()) {
+    case 'before':
+      return 'start';
+    case 'center':
+      return 'center';
+    case 'after':
+    default:
+      return 'end';
+  }
+}
+
+function normalizeTextAlign(value?: string): 'start' | 'center' | 'end' | 'left' | 'right' {
+  switch ((value ?? '').toLowerCase()) {
+    case 'left':
+      return 'left';
+    case 'right':
+      return 'right';
+    case 'end':
+      return 'end';
+    case 'start':
+      return 'start';
+    case 'center':
+    default:
+      return 'center';
+  }
+}
+
+function parseTtmlPair(value?: string): {x: number; y: number} | undefined {
+  if (!value) {
+    return void 0;
+  }
+
+  const parts = value.trim().split(/\s+/);
+  if (parts.length < 2) {
+    return void 0;
+  }
+
+  return {
+    x: parseTtmlPercent(parts[0]),
+    y: parseTtmlPercent(parts[1]),
+  };
+}
+
+function parseTtmlPercent(value: string): number {
+  const match = value.trim().match(/^(-?\d+(?:\.\d+)?)%$/);
+  if (!match) {
+    return Number(value) || 0;
+  }
+
+  return Number(match[1]);
+}
+
+function textOutlineToTextShadow(value: string): string {
+  const parts = value.trim().split(/\s+/);
+  const color = parts[0] ?? 'black';
+  const radius = parts[1] ?? '2px';
+  return `0 0 ${radius} ${color}`;
+}
+
+function getAttrAny(element: Element, names: string[]): string | null {
+  for (const name of names) {
+    const value = element.getAttribute(name);
+    if (value !== null) {
+      return value;
+    }
+
+    const namespacedValue = getNamespacedAttr(element, name);
+    if (namespacedValue !== null) {
+      return namespacedValue;
+    }
+  }
+
+  return null;
+}
+
+function getNamespacedAttr(element: Element, name: string): string | null {
+  const parts = name.split(':');
+  if (parts.length !== 2) {
+    return null;
+  }
+
+  const [prefix, localName] = parts;
+  const namespace = getNamespaceUri(prefix);
+  return namespace ? element.getAttributeNS(namespace, localName) : null;
+}
+
+function getNamespaceUri(prefix: string): string | null {
+  switch (prefix) {
+    case 'xml':
+      return 'http://www.w3.org/XML/1998/namespace';
+    case 'tts':
+      return 'http://www.w3.org/ns/ttml#styling';
+    case 'ttm':
+      return 'http://www.w3.org/ns/ttml#metadata';
+    case 'ttp':
+      return 'http://www.w3.org/ns/ttml#parameter';
+    default:
+      return null;
+  }
+}
+
+function escapeVttText(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function extractDfxpText(node: Element, styles: Map<string, TtmlStyle>, inheritedStyle: TtmlStyle = {}): string {
+  const currentStyle = mergeTtmlStyles(getAttrAny(node, ['style']) ?? '', node, styles);
+  const mergedStyle = {...inheritedStyle, ...currentStyle};
+  let text = '';
+
+  node.childNodes.forEach((child) => {
+    if (child.nodeType === Node.TEXT_NODE) {
+      text += escapeVttText(child.textContent ?? '');
+    } else if (child.nodeType === Node.ELEMENT_NODE) {
+      const element = child as Element;
+      const tagName = element.tagName.toLowerCase();
+      if (tagName === 'br') {
+        text += '\n';
+      } else {
+        const childStyle = mergeTtmlStyles(getAttrAny(element, ['style']) ?? '', element, styles);
+        const combinedStyle = {...mergedStyle, ...childStyle};
+        const childText = extractDfxpText(element, styles, combinedStyle);
+        text += wrapDfxpText(childText, combinedStyle);
+      }
+    }
+  });
+
+  return text;
+}
+
+function wrapDfxpText(text: string, style: TtmlStyle): string {
+  let wrapped = text;
+
+  if ((style.fontStyle ?? '').toLowerCase() === 'italic') {
+    wrapped = `<i>${wrapped}</i>`;
+  }
+  if ((style.fontWeight ?? '').toLowerCase() === 'bold') {
+    wrapped = `<b>${wrapped}</b>`;
+  }
+  if ((style.textDecoration ?? '').toLowerCase().includes('underline')) {
+    wrapped = `<u>${wrapped}</u>`;
+  }
+
+  return wrapped;
 }
 
 function parseTimedTextClockValue(value: string): number {
@@ -160,25 +564,6 @@ function decodeSccPayload(payload: string): string {
         text += String.fromCharCode(byte);
       }
     });
-  });
-
-  return text;
-}
-
-function extractDfxpText(node: Element): string {
-  let text = '';
-
-  node.childNodes.forEach((child) => {
-    if (child.nodeType === Node.TEXT_NODE) {
-      text += child.textContent ?? '';
-    } else if (child.nodeType === Node.ELEMENT_NODE) {
-      const element = child as Element;
-      if (element.tagName.toLowerCase() === 'br') {
-        text += '\n';
-      } else {
-        text += extractDfxpText(element);
-      }
-    }
   });
 
   return text;

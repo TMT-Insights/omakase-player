@@ -758,19 +758,7 @@ export class VideoController implements VideoControllerApi {
           if (this.getCurrentTime() >= this.getMostAccurateDuration()) {
             finalizePause();
           } else {
-            // console.debug(`%cpause control sync start`, 'color: purple');
-            this.syncVideoFrames({}).subscribe((result) => {
-              // playbackState.pausing can be either true (pause through API) or even false (pause initiated externally by browser with PIP close)
-              // Thus, we will not inspect this._playbackStateMachine!.pausing
-              this._seekFromCurrentFrame(1)
-                .pipe(takeUntil(this._pausingBreaker$), takeUntil(this._seekBreaker$), take(1))
-                .subscribe({
-                  next: () => {
-                    // console.debug(`%cpause control sync end`, 'color: purple');
-                    finalizePause();
-                  },
-                });
-            });
+            finalizePause();
           }
         },
       });
