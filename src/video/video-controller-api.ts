@@ -27,6 +27,8 @@ import {
   OmpAudioTrack,
   OmpAudioTrackCreateType,
   OmpNamedEventEventName,
+  SubtitlesAssTrack,
+  SubtitlesAssTrackCreateType,
   SubtitlesDfxpTrack,
   SubtitlesDfxpTrackCreateType,
   SidecarAudioChangeEvent,
@@ -106,6 +108,8 @@ export interface VideoControllerApi extends VideoApi, Destroyable {
   createSubtitlesVttTrack(subtitlesVttTrack: SubtitlesVttTrack): Observable<SubtitlesVttTrack>;
 
   createSubtitlesDfxpTrack(subtitlesDfxpTrack: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack>;
+
+  createSubtitlesAssTrack(subtitlesAssTrack: SubtitlesAssTrackCreateType): Observable<SubtitlesAssTrack>;
 
   createSubtitlesSccTrack(subtitlesSccTrack: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack>;
 

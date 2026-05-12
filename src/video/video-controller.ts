@@ -27,6 +27,8 @@ import {
   OmpError,
   OmpNamedEvent,
   OmpNamedEventEventName,
+  SubtitlesAssTrack,
+  SubtitlesAssTrackCreateType,
   SidecarAudioChangeEvent,
   SidecarAudioCreateEvent,
   SidecarAudioInputSoloMuteEvent,
@@ -2251,6 +2253,8 @@ export class VideoController implements VideoControllerApi {
         forkJoin(
           subtitlesVttTracks.map((p) => {
             switch (p.format ?? 'vtt') {
+              case 'ass':
+                return this.createSubtitlesAssTrack(p as SubtitlesAssTrackCreateType) as Observable<SubtitlesTrack>;
               case 'dfxp':
                 return this.createSubtitlesDfxpTrack(p as SubtitlesDfxpTrackCreateType) as Observable<SubtitlesTrack>;
               case 'scc':
@@ -2285,6 +2289,13 @@ export class VideoController implements VideoControllerApi {
       ...subtitlesDfxpTrack,
       format: 'dfxp',
     } as SubtitlesDfxpTrack) as Observable<SubtitlesDfxpTrack>;
+  }
+
+  createSubtitlesAssTrack(subtitlesAssTrack: SubtitlesAssTrackCreateType): Observable<SubtitlesAssTrack> {
+    return this.createSubtitlesTrack({
+      ...subtitlesAssTrack,
+      format: 'ass',
+    } as SubtitlesAssTrack) as Observable<SubtitlesAssTrack>;
   }
 
   createSubtitlesSccTrack(subtitlesSccTrack: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack> {

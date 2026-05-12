@@ -37,6 +37,8 @@ import {
   SidecarAudioRemoveEvent,
   SidecarAudiosChangeEvent,
   SidecarAudioVolumeChangeEvent,
+  SubtitlesAssTrack,
+  SubtitlesAssTrackCreateType,
   SubtitlesDfxpTrack,
   SubtitlesDfxpTrackCreateType,
   SubtitlesCreateEvent,
@@ -770,6 +772,10 @@ export class RemoteVideoController implements VideoControllerApi {
 
   createSubtitlesDfxpTrack(subtitlesDfxpTrack: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack> {
     return fromPromise(firstValueFrom(this._messageChannel.sendAndObserveResponse('VideoControllerApi.createSubtitlesDfxpTrack', [subtitlesDfxpTrack])));
+  }
+
+  createSubtitlesAssTrack(subtitlesAssTrack: SubtitlesAssTrackCreateType): Observable<SubtitlesAssTrack> {
+    return fromPromise(firstValueFrom(this._messageChannel.sendAndObserveResponse('VideoControllerApi.createSubtitlesAssTrack', [subtitlesAssTrack])));
   }
 
   createSubtitlesSccTrack(subtitlesSccTrack: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack> {

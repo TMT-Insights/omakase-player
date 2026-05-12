@@ -144,6 +144,7 @@ export type MessageChannelActionsMap = OmpBroadcastChannelActionsMap<{
   'VideoControllerApi.clearSafeZones': ExtractMethodTypes<VideoControllerApi, 'clearSafeZones'>;
   'VideoControllerApi.createSubtitlesVttTrack': ExtractMethodTypes<VideoControllerApi, 'createSubtitlesVttTrack'>;
   'VideoControllerApi.createSubtitlesDfxpTrack': ExtractMethodTypes<VideoControllerApi, 'createSubtitlesDfxpTrack'>;
+  'VideoControllerApi.createSubtitlesAssTrack': ExtractMethodTypes<VideoControllerApi, 'createSubtitlesAssTrack'>;
   'VideoControllerApi.createSubtitlesSccTrack': ExtractMethodTypes<VideoControllerApi, 'createSubtitlesSccTrack'>;
   'VideoControllerApi.hideSubtitlesTrack': ExtractMethodTypes<VideoControllerApi, 'hideSubtitlesTrack'>;
   'VideoControllerApi.removeAllSubtitlesTracks': ExtractMethodTypes<VideoControllerApi, 'removeAllSubtitlesTracks'>;

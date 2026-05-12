@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import {parseResponse, VTTCue} from 'media-captions';
+import {parseResponse, VTTCue, VTTRegion} from 'media-captions';
 import {SubtitlesTrack} from '../types';
 
 export interface SubtitleCaptionsTrack {
@@ -33,6 +33,18 @@ interface TtmlStyle {
   textDecoration?: string;
   textOutline?: string;
   lineHeight?: string;
+  displayAlign?: string;
+  origin?: string;
+  extent?: string;
+}
+
+interface TtmlRegion {
+  id: string;
+  vttRegion: VTTRegion;
+  origin?: string;
+  extent?: string;
+  displayAlign?: string;
+  textAlign?: string;
 }
 
 export async function loadSubtitleCaptionsTrack(track: SubtitlesTrack): Promise<SubtitleCaptionsTrack> {
@@ -40,6 +52,10 @@ export async function loadSubtitleCaptionsTrack(track: SubtitlesTrack): Promise<
 
   if (format === 'vtt') {
     return parseResponse(fetch(track.src));
+  }
+
+  if (format === 'ass') {
+    return parseResponse(fetch(track.src), {type: 'ass'});
   }
 
   const text = await (await fetch(track.src)).text();
@@ -61,6 +77,7 @@ function parseDfxpToTrack(text: string): SubtitleCaptionsTrack {
   }
 
   const styles = parseTtmlStyles(doc);
+  const regions = parseTtmlRegions(doc);
   const cues: VTTCue[] = [];
 
   getTtmlElements(doc, 'p').forEach((p, index) => {
@@ -73,6 +90,11 @@ function parseDfxpToTrack(text: string): SubtitleCaptionsTrack {
       return;
     }
 
+    const mergedStyle = resolveInheritedTtmlStyle(p, styles);
+    const region = getDfxpRegion(p, regions, mergedStyle);
+    if (region && !regions.has(region.id)) {
+      regions.set(region.id, region);
+    }
     const textContent = normalizeCueText(extractDfxpText(p, styles));
     if (!textContent) {
       return;
@@ -80,11 +102,16 @@ function parseDfxpToTrack(text: string): SubtitleCaptionsTrack {
 
     const cue = new VTTCue(begin, end, textContent);
     cue.id = `${index}`;
+    if (region) {
+      cue.region = region.vttRegion;
+    }
+    cue.align = normalizeTextAlign(getAttrAny(p, ['tts:textAlign', 'textAlign']) ?? region?.textAlign ?? mergedStyle.textAlign);
+    cue.style = buildTtmlCueStyle(mergedStyle);
     cues.push(cue);
   });
 
   return {
-    regions: [],
+    regions: Array.from(regions.values()).map((region) => region.vttRegion),
     cues,
   };
 }
@@ -150,10 +177,159 @@ function parseTtmlStyles(doc: Document): Map<string, TtmlStyle> {
       textDecoration: getAttrAny(styleElement, ['tts:textDecoration', 'textDecoration']) ?? undefined,
       textOutline: getAttrAny(styleElement, ['tts:textOutline', 'textOutline']) ?? undefined,
       lineHeight: getAttrAny(styleElement, ['tts:lineHeight', 'lineHeight']) ?? undefined,
+      displayAlign: getAttrAny(styleElement, ['tts:displayAlign', 'displayAlign']) ?? undefined,
+      origin: getAttrAny(styleElement, ['tts:origin', 'origin']) ?? undefined,
+      extent: getAttrAny(styleElement, ['tts:extent', 'extent']) ?? undefined,
     });
   });
 
   return styles;
+}
+
+function resolveInheritedTtmlStyle(element: Element, styles: Map<string, TtmlStyle>): TtmlStyle {
+  const chain: Element[] = [];
+  let current: Element | null = element;
+
+  while (current) {
+    chain.push(current);
+    current = current.parentElement;
+  }
+
+  return chain
+    .reverse()
+    .reduce<TtmlStyle>((acc, node) => Object.assign(acc, mergeTtmlStyles(getAttrAny(node, ['style']) ?? '', node, styles)), {});
+}
+
+function parseTtmlRegions(doc: Document): Map<string, TtmlRegion> {
+  const regions = new Map<string, TtmlRegion>();
+
+  getTtmlElements(doc, 'region').forEach((regionElement) => {
+    const id = getAttrAny(regionElement, ['xml:id', 'id']);
+    if (!id) {
+      return;
+    }
+
+    const geometry = parseTtmlRegionGeometry(
+      getAttrAny(regionElement, ['tts:origin', 'origin']) ?? undefined,
+      getAttrAny(regionElement, ['tts:extent', 'extent']) ?? undefined,
+      getAttrAny(regionElement, ['tts:displayAlign', 'displayAlign']) ?? undefined,
+    );
+
+    regions.set(id, {
+      id,
+      vttRegion: toVttRegion(id, geometry),
+      origin: getAttrAny(regionElement, ['tts:origin', 'origin']) ?? undefined,
+      extent: getAttrAny(regionElement, ['tts:extent', 'extent']) ?? undefined,
+      displayAlign: getAttrAny(regionElement, ['tts:displayAlign', 'displayAlign']) ?? undefined,
+      textAlign: getAttrAny(regionElement, ['tts:textAlign', 'textAlign']) ?? undefined,
+    });
+  });
+
+  return regions;
+}
+
+function parseTtmlRegionGeometry(originValue?: string, extentValue?: string, displayAlignValue?: string) {
+  const origin = parseTtmlPair(originValue);
+  const extent = parseTtmlPair(extentValue);
+
+  return {
+    origin,
+    extent,
+    displayAlign: displayAlignValue,
+  };
+}
+
+function getDfxpRegion(p: Element, regions: Map<string, TtmlRegion>, style: TtmlStyle): TtmlRegion | undefined {
+  const regionId = getAttrAny(p, ['region']) ?? undefined;
+  const region = regionId ? regions.get(regionId) : undefined;
+  if (region) {
+    return region;
+  }
+
+  const origin = parseTtmlPair(style.origin);
+  const extent = parseTtmlPair(style.extent);
+  if (!origin || !extent) {
+    return void 0;
+  }
+
+  const id = `cue-${p.getAttribute('xml:id') ?? p.getAttribute('id') ?? ''}`;
+  return {
+    id,
+    vttRegion: toVttRegion(id, {origin, extent, displayAlign: style.displayAlign}),
+    origin: style.origin,
+    extent: style.extent,
+    displayAlign: style.displayAlign,
+    textAlign: style.textAlign,
+  };
+}
+
+function buildTtmlCueStyle(style: TtmlStyle): Record<string, string> {
+  return {
+    ...(style.fontFamily ? {'font-family': style.fontFamily} : {}),
+    ...(style.fontSize ? {'font-size': style.fontSize} : {}),
+    ...(style.fontStyle ? {'font-style': style.fontStyle} : {}),
+    ...(style.fontWeight ? {'font-weight': style.fontWeight} : {}),
+    ...(style.color ? {color: style.color} : {}),
+    ...(style.backgroundColor ? {'background-color': style.backgroundColor} : {}),
+    ...(style.lineHeight ? {'line-height': style.lineHeight} : {}),
+    ...(style.textDecoration ? {'text-decoration': style.textDecoration} : {}),
+    ...(style.textOutline ? {'text-shadow': textOutlineToTextShadow(style.textOutline)} : {}),
+  };
+}
+
+function toVttRegion(id: string, geometry: {origin?: {x: number; y: number}; extent?: {x: number; y: number}; displayAlign?: string}): VTTRegion {
+  const region = new VTTRegion();
+  region.id = id;
+  region.width = geometry.extent?.x ?? 100;
+  (region as any).height = geometry.extent?.y ?? 0;
+  region.lines = 3;
+  region.regionAnchorX = 0;
+  region.regionAnchorY = 0;
+  region.viewportAnchorX = geometry.origin?.x ?? 0;
+  region.viewportAnchorY = geometry.origin?.y ?? 0;
+  region.scroll = '';
+  return region;
+}
+
+function normalizeTextAlign(value?: string): 'start' | 'center' | 'end' | 'left' | 'right' {
+  switch ((value ?? '').toLowerCase()) {
+    case 'left':
+      return 'left';
+    case 'right':
+      return 'right';
+    case 'end':
+      return 'end';
+    case 'start':
+      return 'start';
+    case 'center':
+    default:
+      return 'center';
+  }
+}
+
+function parseTtmlPair(value?: string): {x: number; y: number} | undefined {
+  if (!value) {
+    return void 0;
+  }
+
+  const parts = value.trim().split(/\s+/);
+  if (parts.length < 2) {
+    return void 0;
+  }
+
+  return {
+    x: parseTtmlPercent(parts[0]),
+    y: parseTtmlPercent(parts[1]),
+  };
+}
+
+function parseTtmlPercent(value: string): number {
+  const match = value.trim().match(/^(-?\d+(?:\.\d+)?)%$/);
+  if (!match) {
+    return Number(value) || 0;
+  }
+
+  return Number(match[1]);
 }
 
 function mergeTtmlStyles(styleRefs: string, element: Element, styles: Map<string, TtmlStyle>): TtmlStyle {

@@ -45,6 +45,8 @@ import {
   SidecarAudioRemoveEvent,
   SidecarAudiosChangeEvent,
   SidecarAudioVolumeChangeEvent,
+  SubtitlesAssTrack,
+  SubtitlesAssTrackCreateType,
   SubtitlesDfxpTrack,
   SubtitlesDfxpTrackCreateType,
   SubtitlesCreateEvent,
@@ -843,6 +845,14 @@ export class DetachedVideoController implements VideoControllerApi {
       .subscribe({
         next: ([request, sendResponseHook]) => {
           sendResponseHook(this._videoController.createSubtitlesDfxpTrack(request[0]));
+        },
+      });
+
+    this._messageChannel!.createRequestResponseStream('VideoControllerApi.createSubtitlesAssTrack')
+      .pipe(takeUntil(this._messageChannelBreaker$))
+      .subscribe({
+        next: ([request, sendResponseHook]) => {
+          sendResponseHook(this._videoController.createSubtitlesAssTrack(request[0]));
         },
       });
 
@@ -1739,6 +1749,10 @@ export class DetachedVideoController implements VideoControllerApi {
 
   createSubtitlesDfxpTrack(subtitlesDfxpTrack: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack> {
     return this._videoController.createSubtitlesDfxpTrack(subtitlesDfxpTrack);
+  }
+
+  createSubtitlesAssTrack(subtitlesAssTrack: SubtitlesAssTrackCreateType): Observable<SubtitlesAssTrack> {
+    return this._videoController.createSubtitlesAssTrack(subtitlesAssTrack);
   }
 
   createSubtitlesSccTrack(subtitlesSccTrack: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack> {

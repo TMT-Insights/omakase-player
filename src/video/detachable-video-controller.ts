@@ -32,6 +32,8 @@ import {
   OmpAudioTrack,
   OmpError,
   OmpNamedEventEventName,
+  SubtitlesAssTrack,
+  SubtitlesAssTrackCreateType,
   SubtitlesDfxpTrackCreateType,
   SubtitlesSccTrackCreateType,
   SubtitlesTrack,
@@ -142,6 +144,8 @@ export class DetachableVideoController extends SwitchableVideoController {
 
   private createSubtitlesTrackByFormat(subtitlesTrack: SubtitlesTrack): Observable<SubtitlesTrack> {
     switch (subtitlesTrack.format ?? 'vtt') {
+      case 'ass':
+        return this.createSubtitlesAssTrack(subtitlesTrack as SubtitlesAssTrackCreateType) as Observable<SubtitlesTrack>;
       case 'dfxp':
         return this.createSubtitlesDfxpTrack(subtitlesTrack as SubtitlesDfxpTrackCreateType) as Observable<SubtitlesTrack>;
       case 'scc':

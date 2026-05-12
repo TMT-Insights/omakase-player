@@ -22,4 +22,4 @@ export * from './track';
 export * from './chart';
 export * from './ts-types';
 
-export type {SubtitlesVttTrackCreateType, OmpAudioTrackCreateType} from './track';
+export type {SubtitlesVttTrackCreateType, SubtitlesAssTrackCreateType, OmpAudioTrackCreateType} from './track';

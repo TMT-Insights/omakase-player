@@ -21,6 +21,7 @@ export * from './types';
 export * from './vtt';
 
 export * from './tools';
+export * from './subtitles/subtitle-captions-util';
 
 // TODO consolidate in next major version
 export * from './timeline/marker';

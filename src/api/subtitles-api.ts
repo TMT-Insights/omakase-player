@@ -18,6 +18,8 @@ import {Api} from './api';
 import {Observable} from 'rxjs';
 import {
   SubtitlesCreateEvent,
+  SubtitlesAssTrack,
+  SubtitlesAssTrackCreateType,
   SubtitlesDfxpTrack,
   SubtitlesDfxpTrackCreateType,
   SubtitlesEvent,
@@ -69,6 +71,8 @@ export interface SubtitlesApi extends Api {
   createVttTrack(track: SubtitlesVttTrackCreateType): Observable<SubtitlesVttTrack>;
 
   createDfxpTrack(track: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack>;
+
+  createAssTrack(track: SubtitlesAssTrackCreateType): Observable<SubtitlesAssTrack>;
 
   createSccTrack(track: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack>;
 

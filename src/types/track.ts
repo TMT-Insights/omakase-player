@@ -84,7 +84,7 @@ export interface OmakaseVttCueEvent<T extends OmakaseVttCue> {
   action: 'entry' | 'exit';
 }
 
-export type SubtitlesTrackFormat = 'vtt' | 'dfxp' | 'scc';
+export type SubtitlesTrackFormat = 'vtt' | 'dfxp' | 'ass' | 'scc';
 
 export interface SubtitlesTrack extends OmakaseTextTrack {
   kind: 'subtitles';
@@ -104,6 +104,12 @@ export interface SubtitlesDfxpTrack extends SubtitlesTrack {
 }
 
 export type SubtitlesDfxpTrackCreateType = Partial<SubtitlesDfxpTrack> & Pick<SubtitlesDfxpTrack, 'id' | 'src' | 'default' | 'label' | 'language'>;
+
+export interface SubtitlesAssTrack extends SubtitlesTrack {
+  format: 'ass';
+}
+
+export type SubtitlesAssTrackCreateType = Partial<SubtitlesAssTrack> & Pick<SubtitlesAssTrack, 'id' | 'src' | 'default' | 'label' | 'language'>;
 
 export interface SubtitlesSccTrack extends SubtitlesTrack {
   format: 'scc';

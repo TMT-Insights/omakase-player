@@ -36,6 +36,8 @@ import {
   SidecarAudioRemoveEvent,
   SidecarAudiosChangeEvent,
   SidecarAudioVolumeChangeEvent,
+  SubtitlesAssTrack,
+  SubtitlesAssTrackCreateType,
   SubtitlesDfxpTrack,
   SubtitlesDfxpTrackCreateType,
   SubtitlesCreateEvent,
@@ -728,6 +730,10 @@ export class SwitchableVideoController implements VideoControllerApi {
 
   createSubtitlesDfxpTrack(subtitlesDfxpTrack: SubtitlesDfxpTrackCreateType): Observable<SubtitlesDfxpTrack> {
     return this._videoController.createSubtitlesDfxpTrack(subtitlesDfxpTrack);
+  }
+
+  createSubtitlesAssTrack(subtitlesAssTrack: SubtitlesAssTrackCreateType): Observable<SubtitlesAssTrack> {
+    return this._videoController.createSubtitlesAssTrack(subtitlesAssTrack);
   }
 
   createSubtitlesSccTrack(subtitlesSccTrack: SubtitlesSccTrackCreateType): Observable<SubtitlesSccTrack> {

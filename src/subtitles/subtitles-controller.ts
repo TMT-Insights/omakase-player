@@ -17,6 +17,8 @@
 import {
   Destroyable,
   SubtitlesCreateEvent,
+  SubtitlesAssTrack,
+  SubtitlesAssTrackCreateType,
   SubtitlesDfxpTrack,
   SubtitlesDfxpTrackCreateType,
   SubtitlesEvent,
@@ -77,6 +79,18 @@ export class SubtitlesController implements SubtitlesApi, Destroyable {
       kind: 'subtitles',
       embedded: false,
       format: 'dfxp',
+    });
+  }
+
+  createAssTrack(track: SubtitlesAssTrackCreateType): Observable<SubtitlesAssTrack> {
+    return this._videoController.createSubtitlesAssTrack({
+      ...track,
+      id: isNullOrUndefined(track.id) ? CryptoUtil.uuid() : track.id,
+      default: track.default ? track.default : false,
+      hidden: true,
+      kind: 'subtitles',
+      embedded: false,
+      format: 'ass',
     });
   }
 
