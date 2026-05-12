@@ -117,44 +117,83 @@ function parseDfxpToTrack(text: string): SubtitleCaptionsTrack {
 }
 
 function parseSccToCues(text: string): VTTCue[] {
-  const entries = new Map<number, string[]>();
-
-  text.split(/\r?\n|\r/).forEach((line) => {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('Scenarist_SCC')) {
-      return;
-    }
-
-    const match = trimmed.match(/^(\d{2}):(\d{2}):(\d{2}):(\d{2})\s+(.+)$/);
-    if (!match) {
-      return;
-    }
-
-    const startTime = parseSccTimecode(match[1], match[2], match[3], match[4]);
-    const decoded = decodeSccPayload(match[5]);
-    if (!decoded) {
-      return;
-    }
-
-    const existing = entries.get(startTime) ?? [];
-    existing.push(decoded);
-    entries.set(startTime, existing);
-  });
-
-  const ordered = Array.from(entries.entries()).sort((a, b) => a[0] - b[0]);
-  return ordered
-    .map(([startTime, chunks], index) => {
-      const endTime = ordered[index + 1]?.[0] ?? startTime + 2;
-      const textContent = normalizeCueText(chunks.join('\n'));
-      if (!textContent) {
-        return undefined;
+  const cues: VTTCue[] = [];
+  const entries = text
+    .split(/\r?\n|\r/)
+    .map((line) => line.trim())
+    .filter((line) => !!line && !line.startsWith('Scenarist_SCC'))
+    .map((line) => {
+      const match = line.match(/^(\d{2}):(\d{2}):(\d{2}):(\d{2})\s+(.+)$/);
+      if (!match) {
+        return null;
       }
 
-      const cue = new VTTCue(startTime, endTime, textContent);
-      cue.id = `${index}`;
-      return cue;
+      return {
+        time: parseSccTimecode(match[1], match[2], match[3], match[4]),
+        bytes: parseSccPayload(match[5]),
+      };
     })
-    .filter((cue): cue is VTTCue => !!cue);
+    .filter((entry): entry is {time: number; bytes: number[]} => !!entry);
+
+  let currentText = '';
+  let currentStart: number | null = null;
+
+  entries.forEach((entry, index) => {
+    const nextTime = entries[index + 1]?.time ?? entry.time + 2;
+    const flush = () => {
+      const textContent = normalizeCueText(currentText);
+      if (currentStart !== null && textContent) {
+        const cue = new VTTCue(currentStart, nextTime, textContent);
+        cue.id = `${cues.length}`;
+        cues.push(cue);
+      }
+      currentText = '';
+      currentStart = null;
+    };
+
+    for (let i = 0; i < entry.bytes.length; i += 2) {
+      const a = entry.bytes[i] & 0x7f;
+      const b = entry.bytes[i + 1] & 0x7f;
+
+      if (a === 0 && b === 0) {
+        continue;
+      }
+
+      if (isSccControlCode(a, b)) {
+        if (b === 0x2c || b === 0x2d || b === 0x2f) {
+          if (currentStart !== null && currentText.trim()) {
+            flush();
+          } else if (b === 0x2f) {
+            currentText = '';
+            currentStart = null;
+          }
+        } else if (b === 0x21) {
+          currentText = currentText.slice(0, -1);
+        } else if (b === 0x2e) {
+          currentText = '';
+          currentStart = null;
+        }
+        continue;
+      }
+
+      const chars = decodeSccChars(a, b);
+      if (chars.length > 0) {
+        if (currentStart === null) {
+          currentStart = entry.time;
+        }
+        currentText += chars;
+      }
+    }
+  });
+
+  if (currentStart !== null && normalizeCueText(currentText)) {
+    const endTime = entries.length > 0 ? entries[entries.length - 1].time : currentStart + 2;
+    const cue = new VTTCue(currentStart, endTime, normalizeCueText(currentText));
+    cue.id = `${cues.length}`;
+    cues.push(cue);
+  }
+
+  return cues;
 }
 
 function parseTtmlStyles(doc: Document): Map<string, TtmlStyle> {
@@ -491,25 +530,138 @@ function parseSccTimecode(hours: string, minutes: string, seconds: string, frame
   return Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds) + Number(frames) / 30;
 }
 
-function decodeSccPayload(payload: string): string {
-  const chunks = payload.match(/[0-9a-fA-F]{4}/g) ?? [];
-  let text = '';
-
-  chunks.forEach((chunk) => {
+function parseSccPayload(payload: string): number[] {
+  return (payload.match(/[0-9a-fA-F]{4}/g) ?? []).flatMap((chunk) => {
     const value = Number.parseInt(chunk, 16);
-    const high = (value >> 8) & 0xff;
-    const low = value & 0xff;
-
-    [high, low].forEach((byte) => {
-      if (byte === 0x0d) {
-        text += '\n';
-      } else if (byte >= 0x20 && byte <= 0x7e) {
-        text += String.fromCharCode(byte);
-      }
-    });
+    return [(value >> 8) & 0xff, value & 0xff];
   });
+}
 
-  return text;
+function isSccControlCode(a: number, b: number): boolean {
+  return (
+    (((a === 0x14 || a === 0x1c || a === 0x15 || a === 0x1d) && b >= 0x20 && b <= 0x2f) ||
+      ((a === 0x17 || a === 0x1f) && b >= 0x21 && b <= 0x23) ||
+      ((a === 0x11 || a === 0x19) && b >= 0x20 && b <= 0x2f) ||
+      ((a === 0x10 || a === 0x18) && b >= 0x20 && b <= 0x2f))
+  );
+}
+
+function decodeSccChars(a: number, b: number): string {
+  const chars: number[] = [];
+  let charCode1 = a;
+
+  if (a >= 0x19) {
+    charCode1 = a - 8;
+  }
+
+  if (charCode1 >= 0x11 && charCode1 <= 0x13) {
+    const oneCode = charCode1 === 0x11 ? b + 0x50 : charCode1 === 0x12 ? b + 0x70 : b + 0x90;
+    chars.push(oneCode);
+  } else if (a >= 0x20 && a <= 0x7f) {
+    chars.push(a);
+    if (b !== 0) {
+      chars.push(b);
+    }
+  }
+
+  return chars.map(decodeCea608Byte).join('');
+}
+
+function decodeCea608Byte(byte: number): string {
+  return String.fromCharCode(CEA608_SPECIAL_CHARS[byte] ?? byte);
+}
+
+const CEA608_SPECIAL_CHARS: Record<number, number> = {
+  0x2a: 0xe1,
+  0x5c: 0xe9,
+  0x5e: 0xed,
+  0x5f: 0xf3,
+  0x60: 0xfa,
+  0x7b: 0xe7,
+  0x7c: 0xf7,
+  0x7d: 0xd1,
+  0x7e: 0xf1,
+  0x7f: 0x2588,
+  0x80: 0xae,
+  0x81: 0xb0,
+  0x82: 0xbd,
+  0x83: 0xbf,
+  0x84: 0x2122,
+  0x85: 0xa2,
+  0x86: 0xa3,
+  0x87: 0x266a,
+  0x88: 0xe0,
+  0x89: 0x20,
+  0x8a: 0xe8,
+  0x8b: 0xe2,
+  0x8c: 0xea,
+  0x8d: 0xee,
+  0x8e: 0xf4,
+  0x8f: 0xfb,
+  0x90: 0xc1,
+  0x91: 0xc9,
+  0x92: 0xd3,
+  0x93: 0xda,
+  0x94: 0xdc,
+  0x95: 0xfc,
+  0x96: 0x2018,
+  0x97: 0xa1,
+  0x98: 0x2a,
+  0x99: 0x2019,
+  0x9a: 0x2501,
+  0x9b: 0xa9,
+  0x9c: 0x2120,
+  0x9d: 0x2022,
+  0x9e: 0x201c,
+  0x9f: 0x201d,
+  0xa0: 0xc0,
+  0xa1: 0xc2,
+  0xa2: 0xc7,
+  0xa3: 0xc8,
+  0xa4: 0xca,
+  0xa5: 0xcb,
+  0xa6: 0xeb,
+  0xa7: 0xce,
+  0xa8: 0xcf,
+  0xa9: 0xef,
+  0xaa: 0xd4,
+  0xab: 0xd9,
+  0xac: 0xf9,
+  0xad: 0xdb,
+  0xae: 0xab,
+  0xaf: 0xbb,
+  0xb0: 0xc3,
+  0xb1: 0xe3,
+  0xb2: 0xcd,
+  0xb3: 0xcc,
+  0xb4: 0xec,
+  0xb5: 0xd2,
+  0xb6: 0xf2,
+  0xb7: 0xd5,
+  0xb8: 0xf5,
+  0xb9: 0x7b,
+  0xba: 0x7d,
+  0xbb: 0x5c,
+  0xbc: 0x5e,
+  0xbd: 0x5f,
+  0xbe: 0x7c,
+  0xbf: 0x223c,
+  0xc0: 0xc4,
+  0xc1: 0xe4,
+  0xc2: 0xd6,
+  0xc3: 0xf6,
+  0xc4: 0xdf,
+  0xc5: 0xa5,
+  0xc6: 0xa4,
+  0xc7: 0x2503,
+  0xc8: 0xc5,
+  0xc9: 0xe5,
+  0xca: 0xd8,
+  0xcb: 0xf8,
+  0xcc: 0x250f,
+  0xcd: 0x2513,
+  0xce: 0x2517,
+  0xcf: 0x251b,
 }
 
 function normalizeCueText(text: string): string {
