@@ -67,6 +67,7 @@ import playerChromingStyle from '../../style/player-chroming/player-chroming.css
 import captionStyle from '../../node_modules/media-captions/styles/captions.css?raw';
 import {SubtitlesTrack} from '../types';
 import {loadSubtitleCaptionsTrack} from '../subtitles/subtitle-captions-util';
+import {TtmlCaptionsRenderer} from '../subtitles/ttml/ttml-captions-renderer';
 
 export interface PlayerChromingDomControllerConfig {
   playerHTMLElementId: string;
@@ -130,6 +131,8 @@ export class PlayerChromingDomController extends DomController implements Player
   protected _divHelpMenu?: HTMLElement;
 
   protected _captionsRenderer?: CaptionsRenderer;
+  protected _ttmlCaptionsRenderer?: TtmlCaptionsRenderer;
+  protected _activeSubtitlesTrackFormat?: SubtitlesTrack['format'];
 
   protected _bitcEnabled = false;
 
@@ -1264,7 +1267,13 @@ export class PlayerChromingDomController extends DomController implements Player
           }
         });
       this._videoController.onVideoTimeChange$.pipe(takeUntil(this._videoEventBreaker$), takeUntil(this._destroyed$)).subscribe((event) => {
-        this._captionsRenderer!.currentTime = event.currentTime;
+        if (this._activeSubtitlesTrackFormat === 'dfxp') {
+          if (this._ttmlCaptionsRenderer) {
+            this._ttmlCaptionsRenderer.currentTime = event.currentTime;
+          }
+        } else {
+          this.ensureCaptionsRenderer().currentTime = event.currentTime;
+        }
       });
     }
 
@@ -1481,11 +1490,24 @@ export class PlayerChromingDomController extends DomController implements Player
   }
 
   private showCaptions(track: SubtitlesTrack) {
+    this._subtitleEventBreaker$.next();
+    this._activeSubtitlesTrackFormat = track.format;
     from(loadSubtitleCaptionsTrack(track))
       .pipe(takeUntil(this._subtitleEventBreaker$))
       .subscribe({
-        next: ({regions, cues}) => {
-          this._captionsRenderer!.changeTrack({regions, cues});
+        next: ({regions, cues, ttml}) => {
+          if (track.format === 'dfxp' && ttml) {
+            this._captionsRenderer?.destroy();
+            this._captionsRenderer = void 0;
+            const ttmlRenderer = this.ensureTtmlCaptionsRenderer();
+            ttmlRenderer.changeTrack(ttml);
+            ttmlRenderer.currentTime = this._videoController.getCurrentTime();
+          } else {
+            this._ttmlCaptionsRenderer?.destroy();
+            this._ttmlCaptionsRenderer = void 0;
+            this.ensureCaptionsRenderer().changeTrack({regions, cues});
+            this.ensureCaptionsRenderer().currentTime = this._videoController.getCurrentTime();
+          }
           this._mediaControllerElement.classList.add('with-captions');
         },
         error: (err) => {
@@ -1496,7 +1518,35 @@ export class PlayerChromingDomController extends DomController implements Player
 
   private hideCaptions() {
     this._subtitleEventBreaker$.next();
-    this._captionsRenderer!.changeTrack({regions: [], cues: []});
+    this._captionsRenderer?.destroy();
+    this._captionsRenderer = void 0;
+    this._ttmlCaptionsRenderer?.destroy();
+    this._ttmlCaptionsRenderer = void 0;
+    this._activeSubtitlesTrackFormat = void 0;
     this._mediaControllerElement.classList.remove('with-captions');
+  }
+
+  private ensureCaptionsRenderer() {
+    if (!this._captionsRenderer && this._captions) {
+      this._captionsRenderer = new CaptionsRenderer(this._captions);
+    }
+
+    if (!this._captionsRenderer) {
+      throw Error('Captions renderer element not found');
+    }
+
+    return this._captionsRenderer;
+  }
+
+  private ensureTtmlCaptionsRenderer() {
+    if (!this._ttmlCaptionsRenderer && this._captions) {
+      this._ttmlCaptionsRenderer = new TtmlCaptionsRenderer(this._captions);
+    }
+
+    if (!this._ttmlCaptionsRenderer) {
+      throw Error('TTML captions renderer element not found');
+    }
+
+    return this._ttmlCaptionsRenderer;
   }
 }

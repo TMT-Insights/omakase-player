@@ -16,10 +16,12 @@
 
 import {parseResponse, VTTCue, VTTRegion} from 'media-captions';
 import {SubtitlesTrack} from '../types';
+import {TtmlCaptionTrack, TtmlContentNode} from './ttml/ttml-types';
 
 export interface SubtitleCaptionsTrack {
   regions: any[];
   cues: any[];
+  ttml?: TtmlCaptionTrack;
 }
 
 interface TtmlStyle {
@@ -34,17 +36,24 @@ interface TtmlStyle {
   textOutline?: string;
   lineHeight?: string;
   displayAlign?: string;
+  writingMode?: string;
+  xmlSpace?: 'default' | 'preserve';
+  padding?: string;
   origin?: string;
   extent?: string;
 }
 
-interface TtmlRegion {
+interface TtmlRegionData {
   id: string;
   vttRegion: VTTRegion;
   origin?: string;
   extent?: string;
   displayAlign?: string;
   textAlign?: string;
+  writingMode?: string;
+  xmlSpace?: 'default' | 'preserve';
+  padding?: string;
+  style?: Record<string, string>;
 }
 
 export async function loadSubtitleCaptionsTrack(track: SubtitlesTrack): Promise<SubtitleCaptionsTrack> {
@@ -77,8 +86,9 @@ function parseDfxpToTrack(text: string): SubtitleCaptionsTrack {
   }
 
   const styles = parseTtmlStyles(doc);
-  const regions = parseTtmlRegions(doc);
+  const regions = parseTtmlRegions(doc, styles);
   const cues: VTTCue[] = [];
+  const ttmlCues: TtmlCaptionTrack['cues'] = [];
 
   getTtmlElements(doc, 'p').forEach((p, index) => {
     const begin = parseTimedTextClockValue(p.getAttribute('begin') ?? p.getAttribute('start') ?? '');
@@ -95,6 +105,7 @@ function parseDfxpToTrack(text: string): SubtitleCaptionsTrack {
     if (region && !regions.has(region.id)) {
       regions.set(region.id, region);
     }
+    const content = parseTtmlContentNodes(p, styles, mergedStyle);
     const textContent = normalizeCueText(extractDfxpText(p, styles));
     if (!textContent) {
       return;
@@ -108,11 +119,36 @@ function parseDfxpToTrack(text: string): SubtitleCaptionsTrack {
     cue.align = normalizeTextAlign(getAttrAny(p, ['tts:textAlign', 'textAlign']) ?? region?.textAlign ?? mergedStyle.textAlign);
     cue.style = buildTtmlCueStyle(mergedStyle);
     cues.push(cue);
+
+    ttmlCues.push({
+      id: cue.id,
+      startTime: begin,
+      endTime: end,
+      regionId: region?.id,
+      textAlign: normalizeTextAlign(getAttrAny(p, ['tts:textAlign', 'textAlign']) ?? region?.textAlign ?? mergedStyle.textAlign),
+      displayAlign: (region?.displayAlign ?? mergedStyle.displayAlign) as 'before' | 'center' | 'after' | string | undefined,
+      writingMode: mergedStyle.writingMode,
+      xmlSpace: getXmlSpace(p, mergedStyle.xmlSpace ?? region?.xmlSpace),
+      style: buildTtmlCueStyle(mergedStyle),
+      content,
+    });
   });
 
   return {
     regions: Array.from(regions.values()).map((region) => region.vttRegion),
     cues,
+    ttml: {
+      regions: Array.from(regions.values()).map((region) => ({
+        id: region.id,
+        origin: parseTtmlPair(region.origin),
+        extent: parseTtmlPair(region.extent),
+        displayAlign: region.displayAlign,
+        textAlign: region.textAlign,
+        writingMode: region.writingMode,
+        xmlSpace: region.xmlSpace,
+      })),
+      cues: ttmlCues,
+    },
   };
 }
 
@@ -217,6 +253,8 @@ function parseTtmlStyles(doc: Document): Map<string, TtmlStyle> {
       textOutline: getAttrAny(styleElement, ['tts:textOutline', 'textOutline']) ?? undefined,
       lineHeight: getAttrAny(styleElement, ['tts:lineHeight', 'lineHeight']) ?? undefined,
       displayAlign: getAttrAny(styleElement, ['tts:displayAlign', 'displayAlign']) ?? undefined,
+      writingMode: getAttrAny(styleElement, ['tts:writingMode', 'writingMode']) ?? undefined,
+      xmlSpace: getXmlSpace(styleElement),
       origin: getAttrAny(styleElement, ['tts:origin', 'origin']) ?? undefined,
       extent: getAttrAny(styleElement, ['tts:extent', 'extent']) ?? undefined,
     });
@@ -239,8 +277,8 @@ function resolveInheritedTtmlStyle(element: Element, styles: Map<string, TtmlSty
     .reduce<TtmlStyle>((acc, node) => Object.assign(acc, mergeTtmlStyles(getAttrAny(node, ['style']) ?? '', node, styles)), {});
 }
 
-function parseTtmlRegions(doc: Document): Map<string, TtmlRegion> {
-  const regions = new Map<string, TtmlRegion>();
+function parseTtmlRegions(doc: Document, styles: Map<string, TtmlStyle>): Map<string, TtmlRegionData> {
+  const regions = new Map<string, TtmlRegionData>();
 
   getTtmlElements(doc, 'region').forEach((regionElement) => {
     const id = getAttrAny(regionElement, ['xml:id', 'id']);
@@ -261,6 +299,10 @@ function parseTtmlRegions(doc: Document): Map<string, TtmlRegion> {
       extent: getAttrAny(regionElement, ['tts:extent', 'extent']) ?? undefined,
       displayAlign: getAttrAny(regionElement, ['tts:displayAlign', 'displayAlign']) ?? undefined,
       textAlign: getAttrAny(regionElement, ['tts:textAlign', 'textAlign']) ?? undefined,
+      writingMode: getAttrAny(regionElement, ['tts:writingMode', 'writingMode']) ?? undefined,
+      xmlSpace: getXmlSpace(regionElement),
+      padding: getAttrAny(regionElement, ['tts:padding', 'padding']) ?? undefined,
+      style: buildTtmlCueStyle(mergeTtmlStyles(getAttrAny(regionElement, ['style']) ?? '', regionElement, styles)),
     });
   });
 
@@ -278,7 +320,7 @@ function parseTtmlRegionGeometry(originValue?: string, extentValue?: string, dis
   };
 }
 
-function getDfxpRegion(p: Element, regions: Map<string, TtmlRegion>, style: TtmlStyle): TtmlRegion | undefined {
+function getDfxpRegion(p: Element, regions: Map<string, TtmlRegionData>, style: TtmlStyle): TtmlRegionData | undefined {
   const regionId = getAttrAny(p, ['region']) ?? undefined;
   const region = regionId ? regions.get(regionId) : undefined;
   if (region) {
@@ -299,6 +341,7 @@ function getDfxpRegion(p: Element, regions: Map<string, TtmlRegion>, style: Ttml
     extent: style.extent,
     displayAlign: style.displayAlign,
     textAlign: style.textAlign,
+    writingMode: style.writingMode,
   };
 }
 
@@ -314,6 +357,61 @@ function buildTtmlCueStyle(style: TtmlStyle): Record<string, string> {
     ...(style.textDecoration ? {'text-decoration': style.textDecoration} : {}),
     ...(style.textOutline ? {'text-shadow': textOutlineToTextShadow(style.textOutline)} : {}),
   };
+}
+
+function parseTtmlContentNodes(node: Element, styles: Map<string, TtmlStyle>, inheritedStyle: TtmlStyle = {}): TtmlContentNode[] {
+  return parseTtmlContentNodesWithSpace(node, styles, inheritedStyle, getXmlSpace(node, inheritedStyle.xmlSpace));
+}
+
+function parseTtmlContentNodesWithSpace(node: Element, styles: Map<string, TtmlStyle>, inheritedStyle: TtmlStyle = {}, inheritedSpace: 'default' | 'preserve' = 'default'): TtmlContentNode[] {
+  const currentStyle = mergeTtmlStyles(getAttrAny(node, ['style']) ?? '', node, styles);
+  const mergedStyle = {...inheritedStyle, ...currentStyle};
+  const currentSpace = getXmlSpace(node, mergedStyle.xmlSpace ?? inheritedSpace);
+  const content: TtmlContentNode[] = [];
+
+  node.childNodes.forEach((child) => {
+    if (child.nodeType === Node.TEXT_NODE) {
+      const text = normalizeTtmlWhitespace(child.textContent ?? '', currentSpace);
+      if (text) {
+        content.push({kind: 'text', text});
+      }
+    } else if (child.nodeType === Node.ELEMENT_NODE) {
+      const element = child as Element;
+      const tagName = element.tagName.toLowerCase();
+      if (tagName === 'br') {
+        content.push({kind: 'br'});
+      } else {
+        const directStyle = mergeTtmlStyles(getAttrAny(element, ['style']) ?? '', element, styles);
+        const children = parseTtmlContentNodesWithSpace(element, styles, {...mergedStyle, ...directStyle}, getXmlSpace(element, currentSpace));
+        if (children.length > 0) {
+          content.push({kind: 'span', children, style: buildTtmlCueStyle(directStyle)});
+        }
+      }
+    }
+  });
+
+  return content;
+}
+
+function normalizeTtmlWhitespace(value: string, xmlSpace: 'default' | 'preserve'): string {
+  if (xmlSpace === 'preserve') {
+    return value;
+  }
+
+  return value.replace(/\s+/g, ' ');
+}
+
+function getXmlSpace(element: Element, fallback: 'default' | 'preserve' = 'default'): 'default' | 'preserve' {
+  const value = getAttrAny(element, ['xml:space'])?.toLowerCase();
+  if (value === 'preserve') {
+    return 'preserve';
+  }
+
+  if (value === 'default') {
+    return 'default';
+  }
+
+  return fallback;
 }
 
 function toVttRegion(id: string, geometry: {origin?: {x: number; y: number}; extent?: {x: number; y: number}; displayAlign?: string}): VTTRegion {
@@ -389,18 +487,20 @@ function mergeTtmlStyles(styleRefs: string, element: Element, styles: Map<string
 }
 
 function ttmlStyleFromElement(element: Element): TtmlStyle {
-  return {
-    fontStyle: getAttrAny(element, ['tts:fontStyle', 'fontStyle']) ?? undefined,
-    fontWeight: getAttrAny(element, ['tts:fontWeight', 'fontWeight']) ?? undefined,
-    fontFamily: getAttrAny(element, ['tts:fontFamily', 'fontFamily']) ?? undefined,
+    return {
+      fontStyle: getAttrAny(element, ['tts:fontStyle', 'fontStyle']) ?? undefined,
+      fontWeight: getAttrAny(element, ['tts:fontWeight', 'fontWeight']) ?? undefined,
+      fontFamily: getAttrAny(element, ['tts:fontFamily', 'fontFamily']) ?? undefined,
     fontSize: getAttrAny(element, ['tts:fontSize', 'fontSize']) ?? undefined,
     color: getAttrAny(element, ['tts:color', 'color']) ?? undefined,
     backgroundColor: getAttrAny(element, ['tts:backgroundColor', 'backgroundColor']) ?? undefined,
     textAlign: getAttrAny(element, ['tts:textAlign', 'textAlign']) ?? undefined,
     textDecoration: getAttrAny(element, ['tts:textDecoration', 'textDecoration']) ?? undefined,
-    textOutline: getAttrAny(element, ['tts:textOutline', 'textOutline']) ?? undefined,
-    lineHeight: getAttrAny(element, ['tts:lineHeight', 'lineHeight']) ?? undefined,
-  };
+      textOutline: getAttrAny(element, ['tts:textOutline', 'textOutline']) ?? undefined,
+      lineHeight: getAttrAny(element, ['tts:lineHeight', 'lineHeight']) ?? undefined,
+      xmlSpace: getXmlSpace(element),
+      padding: getAttrAny(element, ['tts:padding', 'padding']) ?? undefined,
+    };
 }
 
 function getTtmlElements(doc: Document, tagName: string): Element[] {
