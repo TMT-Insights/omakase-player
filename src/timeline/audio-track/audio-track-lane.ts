@@ -71,6 +71,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
   protected _timecodedEventCatcher?: Konva.Rect;
   protected _itemsGroup?: Konva.Group;
+  private _pendingCues: AudioVttCue[] | null = null;
 
   constructor(config: TimelineLaneConfigDefaultsExcluded<AudioTrackLaneConfig>) {
     super(timelineLaneComposeConfig(configDefault, config));
@@ -135,6 +136,20 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     if (this.vttUrl) {
       this.loadVtt(this.vttUrl, this.getVttLoadOptions(this._config.axiosConfig));
     }
+
+    if (this._videoController!.isVideoLoaded() && this.vttFile) {
+      this.settleAll();
+    }
+  }
+
+  setCues(cues: AudioVttCue[]): number {
+    this._pendingCues = cues;
+    return this.renderPendingCues();
+  }
+
+  override onMeasurementsChange() {
+    super.onMeasurementsChange();
+    this.renderPendingCues();
   }
 
   protected settleLayout() {
@@ -207,40 +222,34 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     return cues;
   }
 
-  private createEntities() {
-    if (!this.vttFile) {
-      throw new Error('VTT file not loaded');
-    }
-
-    if (!this._timeline) {
-      throw new Error('TimelineLane not initalized. Maybe you forgot to add TimelineLane to Timeline?');
+  private renderCues(cues: AudioVttCue[]) {
+    if (!this._timeline || !this._itemsGroup) {
+      return 0;
     }
 
     this.clearItems();
 
-    let timecodedContainerWidth = this._timeline.getTimecodedContainerDimension().width;
-
-    let numOfInterpolations = new Decimal(timecodedContainerWidth + this.style.itemMinPadding)
+    const timecodedContainerWidth = this._timeline.getTimecodedContainerDimension().width;
+    const numOfInterpolations = new Decimal(timecodedContainerWidth + this.style.itemMinPadding)
       .div(this.style.itemWidth + this.style.itemMinPadding)
       .floor()
       .toNumber();
 
-    let itemPadding = new Decimal(timecodedContainerWidth - numOfInterpolations * this.style.itemWidth).div(numOfInterpolations - 1).toNumber();
-
-    let cuesInterpolations = this.resolveCuesInterpolations(numOfInterpolations, itemPadding);
+    const itemPadding = new Decimal(timecodedContainerWidth - numOfInterpolations * this.style.itemWidth).div(numOfInterpolations - 1).toNumber();
+    const cuesInterpolations = this.resolveCuesInterpolations(numOfInterpolations, itemPadding, cues);
 
     for (let i = 0; i < numOfInterpolations; i++) {
-      let cue = cuesInterpolations.get(i);
+      const cue = cuesInterpolations.get(i);
       if (cue) {
-        let itemPosition = this.resolveInterpolatedItemPosition(i, itemPadding);
+        const itemPosition = this.resolveInterpolatedItemPosition(i, itemPadding);
 
-        let audioTrackLaneItem = new AudioTrackLaneItem({
+        const audioTrackLaneItem = new AudioTrackLaneItem({
           x: itemPosition,
           width: this.style.itemWidth,
           audioVttCue: cue,
           style: {
             cornerRadius: this.style.itemCornerRadius,
-            height: this._itemsGroup!.height(),
+            height: this._itemsGroup.height(),
             visible: true,
             maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
             minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
@@ -248,13 +257,47 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
         });
 
         this._itemsMap.set(i, audioTrackLaneItem);
-        this._itemsGroup!.add(audioTrackLaneItem.konvaNode);
+        this._itemsGroup.add(audioTrackLaneItem.konvaNode);
       }
     }
+
+    this.settlePosition();
+    this._itemsGroup.getLayer()?.batchDraw();
+    return this._itemsMap.size;
   }
 
-  private resolveCuesInterpolations(numOfInterpolations: number, paddingWidth: number): Map<number, AudioVttCue> {
-    let visibleCues = this.getVisibleCuesForInterpolation();
+  private renderPendingCues() {
+    if (!this._timeline || !this._itemsGroup) {
+      return 0;
+    }
+
+    const cues = this._pendingCues ?? this.vttFile?.cues ?? null;
+    if (!cues) {
+      return 0;
+    }
+
+    const timecodedContainerWidth = this._timeline.getTimecodedContainerDimension().width;
+    if (timecodedContainerWidth <= 0) {
+      return 0;
+    }
+
+    return this.renderCues(cues);
+  }
+
+  private createEntities() {
+    if (!this.vttFile) {
+      throw new Error('VTT file not loaded');
+    }
+
+    if (!this._timeline || !this._itemsGroup) {
+      throw new Error('TimelineLane not initalized. Maybe you forgot to add TimelineLane to Timeline?');
+    }
+
+    this._pendingCues = this.vttFile.cues;
+    this.renderPendingCues();
+  }
+
+  private resolveCuesInterpolations(numOfInterpolations: number, paddingWidth: number, visibleCues: AudioVttCue[]): Map<number, AudioVttCue> {
 
     let barWidth = this.style.itemWidth;
 
@@ -309,17 +352,10 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       };
 
       if (cuesForInterpolation.length > 0) {
-        let minSampleSum = 0,
-          maxSampleSum = 0;
-        cuesForInterpolation.forEach((cue) => {
-          minSampleSum += cue.minSample;
-          maxSampleSum += cue.maxSample;
-        });
-
         cue = {
           ...cue,
-          minSample: new Decimal(minSampleSum).div(cuesForInterpolation.length).toDecimalPlaces(3).toNumber(),
-          maxSample: new Decimal(maxSampleSum).div(cuesForInterpolation.length).toDecimalPlaces(3).toNumber(),
+          minSample: new Decimal(Math.min(...cuesForInterpolation.map((c) => c.minSample))).toDecimalPlaces(3).toNumber(),
+          maxSample: new Decimal(Math.max(...cuesForInterpolation.map((c) => c.maxSample))).toDecimalPlaces(3).toNumber(),
         };
       }
 
@@ -334,7 +370,8 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       return;
     }
 
-    this.createEntities();
+    this._pendingCues = this.vttFile.cues;
+    this.renderPendingCues();
   }
 
   private resolveInterpolatedItemPosition(itemIndex: number, itemPadding: number) {
@@ -342,20 +379,15 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   }
 
   private settlePosition() {
-    if (!this._videoController!.isVideoLoaded() || !this.vttFile) {
+    if (!this.vttFile) {
       return;
     }
 
     if (this._itemsMap.size > 0) {
-      let visibleTimeRange = this._timeline!.getVisibleTimeRange();
       for (let item of this._itemsMap.values()) {
         let cue = item.getAudioVttCue();
-        if ((cue.startTime >= visibleTimeRange.start && cue.startTime <= visibleTimeRange.end) || (cue.endTime >= visibleTimeRange.start && cue.endTime <= visibleTimeRange.end)) {
-          let x = this._timeline!.timeToTimelinePosition(cue.startTime);
-          item.setPosition({x});
-        } else {
-          item.destroy();
-        }
+        let x = this._timeline!.timeToTimelinePosition(cue.startTime);
+        item.setPosition({x});
       }
     }
   }

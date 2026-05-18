@@ -15,6 +15,7 @@
  */
 
 export * from './audio-vtt-file';
+export * from './mutable-audio-vtt-file';
 export * from './chart-vtt-file';
 export * from './marker-vtt-file';
 export * from './subtitles-vtt-file';
