@@ -64,6 +64,11 @@ export interface VttAwareApi<Q extends OmakaseVttCue, T extends OmakaseVttFile<Q
    * @param options
    */
   loadVtt(vttUrl: string, options?: VttLoadOptions): Observable<T | undefined>;
+
+  /**
+   * Reloads the current VTT source.
+   */
+  reloadVtt(vttUrl: string, options?: VttLoadOptions): Observable<T | undefined>;
 }
 
 export type DownsampleStrategy = 'none' | 'drop' | 'max' | 'min' | 'avg';

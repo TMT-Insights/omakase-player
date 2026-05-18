@@ -116,6 +116,11 @@ export abstract class VttTimelineLane<C extends VttTimelineLaneConfig<S>, S exte
     });
   }
 
+  reloadVtt(vttUrl: string, options: VttLoadOptions = {}): Observable<T | undefined> {
+    this.vttUrl = vttUrl;
+    return this.loadVtt(vttUrl, options);
+  }
+
   getVttLoadOptions(axiosConfig?: AxiosRequestConfig): VttLoadOptions {
     return {
       axiosConfig,
