@@ -17,10 +17,10 @@
 import {SidecarAudioApi} from '../api/sidecar-audio-api';
 import {VideoControllerApi} from './video-controller-api';
 import {OmpAudioTrack} from '../types';
-import {OmpSidecarBufferedAudio} from './sidecar-audio';
+import {OmpSidecarAudio} from './sidecar-audio';
 
 export class SidecarAudioFactory {
   public static createSidecarAudio(videoController: VideoControllerApi, sidecarAudioTrack: OmpAudioTrack): SidecarAudioApi {
-    return new OmpSidecarBufferedAudio(videoController, sidecarAudioTrack);
+    return new OmpSidecarAudio(videoController, sidecarAudioTrack);
   }
 }

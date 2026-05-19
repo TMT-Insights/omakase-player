@@ -46,6 +46,7 @@ import {audioChannelsDefault} from '../constants';
 import {BrowserProvider} from '../common/browser-provider';
 import {OmpAudioEffectFilter, OmpAudioEffectsGraphDef, OmpAudioEffectParam, OmpAudioEffectsGraph} from '../audio';
 import {OmpAudioEffectsGraphConnection, OmpAudioEffectsSlot} from '../audio/model';
+import {ALL_FORMATS, BufferSource, Input, InputAudioTrack} from 'mediabunny';
 
 export abstract class BaseOmpSidecarAudio implements SidecarAudioApi, Destroyable {
   public readonly onLoading$: Subject<SidecarAudioLoadingEvent> = new Subject<SidecarAudioLoadingEvent>();
@@ -64,6 +65,8 @@ export abstract class BaseOmpSidecarAudio implements SidecarAudioApi, Destroyabl
 
   protected _loaded: boolean = false;
   protected _audioTrack: OmpAudioTrack;
+  protected _input?: Input;
+  protected _inputAudioTrack?: InputAudioTrack;
 
   protected _audioInputIfNode: GainNode;
   protected _audioRouter?: OmpAudioRouter;
@@ -123,6 +126,10 @@ export abstract class BaseOmpSidecarAudio implements SidecarAudioApi, Destroyabl
 
   protected emitInputSoloMute() {
     this.onInputSoloMute$.next(this.getSidecarAudioInputSoloMuteState());
+  }
+
+  getInputAudioTrack(): InputAudioTrack | undefined {
+    return this._inputAudioTrack;
   }
 
   createAudioRouter(inputsNumber?: number, outputsNumber?: number): OmpAudioRouter {
@@ -482,6 +489,10 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
 
   protected _isBrowserFirefox = BrowserProvider.instance().isFirefox;
 
+  getMediaElementAudioSourceNode(): MediaElementAudioSourceNode | undefined {
+    return this._mediaElementAudioSourceNode;
+  }
+
   constructor(videoController: VideoControllerApi, audioTrack: OmpAudioTrack) {
     super(videoController, audioTrack);
 
@@ -833,6 +844,9 @@ export class OmpSidecarBufferedAudio extends BaseOmpSidecarAudio {
     this._audioBufferSourceNode = void 0;
     this._audioBuffer = void 0;
     this._originalAudioBuffer = void 0;
+    this._inputAudioTrack = void 0;
+    this._input?.dispose();
+    this._input = void 0;
 
     super.destroy();
   }
@@ -967,7 +981,18 @@ export class OmpSidecarBufferedAudio extends BaseOmpSidecarAudio {
           responseType: 'arraybuffer',
         })
       )
-        .pipe(mergeMap((response) => from(this._videoController.getAudioContext().decodeAudioData(response.data as ArrayBuffer))))
+        .pipe(
+          mergeMap(async (response) => {
+            const audioBytes = response.data as ArrayBuffer;
+            const inputBytes = audioBytes.slice(0);
+            const decodeBytes = audioBytes.slice(0);
+
+            this._input?.dispose();
+            this._input = new Input({ source: new BufferSource(inputBytes), formats: ALL_FORMATS });
+            this._inputAudioTrack = (await this._input.getPrimaryAudioTrack()) ?? void 0;
+            return this._videoController.getAudioContext().decodeAudioData(decodeBytes);
+          })
+        )
         .subscribe({
           next: (audioBuffer) => {
             this._originalAudioBuffer = audioBuffer;
