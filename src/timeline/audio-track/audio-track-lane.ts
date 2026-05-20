@@ -216,10 +216,8 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     this._itemsGroup!.destroyChildren();
   }
 
-  private getVisibleCuesForInterpolation(): AudioVttCue[] {
-    let visibleTimeRange = this._timeline!.getVisibleTimeRange();
-    let cues = this.vttFile!.findCues(visibleTimeRange.start, visibleTimeRange.end);
-    return cues;
+  private getVisibleCues(): AudioVttCue[] {
+    return this._pendingCues ?? this.vttFile?.cues ?? [];
   }
 
   private renderCues(cues: AudioVttCue[]) {
@@ -229,39 +227,25 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
     this.clearItems();
 
-    const timecodedContainerWidth = this._timeline.getTimecodedContainerDimension().width;
-    const numOfInterpolations = new Decimal(timecodedContainerWidth + this.style.itemMinPadding)
-      .div(this.style.itemWidth + this.style.itemMinPadding)
-      .floor()
-      .toNumber();
+    for (let i = 0; i < cues.length; i++) {
+      const cue = cues[i];
+      const audioTrackLaneItem = new AudioTrackLaneItem({
+        x: this._timeline.timeToTimelinePosition(cue.startTime),
+        width: this.style.itemWidth,
+        audioVttCue: cue,
+        style: {
+          cornerRadius: this.style.itemCornerRadius,
+          height: this._itemsGroup.height(),
+          visible: true,
+          maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
+          minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
+        },
+      });
 
-    const itemPadding = new Decimal(timecodedContainerWidth - numOfInterpolations * this.style.itemWidth).div(numOfInterpolations - 1).toNumber();
-    const cuesInterpolations = this.resolveCuesInterpolations(numOfInterpolations, itemPadding, cues);
-
-    for (let i = 0; i < numOfInterpolations; i++) {
-      const cue = cuesInterpolations.get(i);
-      if (cue) {
-        const itemPosition = this.resolveInterpolatedItemPosition(i, itemPadding);
-
-        const audioTrackLaneItem = new AudioTrackLaneItem({
-          x: itemPosition,
-          width: this.style.itemWidth,
-          audioVttCue: cue,
-          style: {
-            cornerRadius: this.style.itemCornerRadius,
-            height: this._itemsGroup.height(),
-            visible: true,
-            maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
-            minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
-          },
-        });
-
-        this._itemsMap.set(i, audioTrackLaneItem);
-        this._itemsGroup.add(audioTrackLaneItem.konvaNode);
-      }
+      this._itemsMap.set(i, audioTrackLaneItem);
+      this._itemsGroup.add(audioTrackLaneItem.konvaNode);
     }
 
-    this.settlePosition();
     this._itemsGroup.getLayer()?.batchDraw();
     return this._itemsMap.size;
   }
@@ -271,7 +255,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       return 0;
     }
 
-    const cues = this._pendingCues ?? this.vttFile?.cues ?? null;
+    const cues = this.getVisibleCues();
     if (!cues) {
       return 0;
     }
@@ -297,92 +281,15 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     this.renderPendingCues();
   }
 
-  private resolveCuesInterpolations(numOfInterpolations: number, paddingWidth: number, visibleCues: AudioVttCue[]): Map<number, AudioVttCue> {
-
-    let barWidth = this.style.itemWidth;
-
-    let cuesInterpolations: Map<number, AudioVttCue> = new Map<number, AudioVttCue>();
-
-    for (let i = 0; i < numOfInterpolations; i++) {
-      let isFirst = i === 0;
-      let isLast = i === numOfInterpolations - 1;
-      let interpolationStartX: number;
-      let interpolationEndX: number;
-
-      if (isFirst) {
-        // first interpolation
-        interpolationStartX = 0;
-        interpolationEndX = new Decimal(barWidth).plus(new Decimal(paddingWidth).div(2)).toNumber();
-      } else if (isLast) {
-        // last interpolation
-        interpolationStartX = new Decimal(i)
-          .mul(barWidth + paddingWidth)
-          .minus(new Decimal(paddingWidth).div(2))
-          .toNumber();
-        interpolationEndX = this._timeline!.getTimecodedContainerDimension().width;
-      } else {
-        // every interpolation in between first and last
-        interpolationStartX = new Decimal(i)
-          .mul(barWidth + paddingWidth)
-          .minus(new Decimal(paddingWidth).div(2))
-          .toNumber();
-        interpolationEndX = new Decimal(interpolationStartX).plus(barWidth).plus(paddingWidth).toNumber();
-      }
-
-      let interpolationStartTime = this._timeline!.timelineContainerPositionToTime(interpolationStartX);
-      let interpolationEndTime = this._timeline!.timelineContainerPositionToTime(interpolationEndX);
-
-      let cuesForInterpolation = visibleCues.filter((cue) => {
-        let inside = cue.startTime >= interpolationStartTime && (isLast ? cue.endTime <= interpolationEndTime : cue.endTime < interpolationEndTime);
-        let leftIntersection = cue.startTime < interpolationStartTime && cue.endTime >= interpolationStartTime && (isLast ? cue.endTime <= interpolationEndTime : cue.endTime < interpolationEndTime);
-        let rightIntersection =
-          cue.startTime >= interpolationStartTime && (isLast ? cue.startTime <= interpolationEndTime : cue.startTime < interpolationEndTime) && cue.endTime > interpolationEndTime;
-        let completeIntersection = cue.startTime < interpolationStartTime && cue.endTime > interpolationEndTime;
-        return inside || leftIntersection || rightIntersection || completeIntersection;
-      });
-
-      let cue: AudioVttCue = {
-        index: i,
-        id: `${i}`,
-        text: '',
-        minSample: 0,
-        maxSample: 0,
-        startTime: interpolationStartTime,
-        endTime: interpolationEndTime,
-      };
-
-      if (cuesForInterpolation.length > 0) {
-        cue = {
-          ...cue,
-          minSample: new Decimal(Math.min(...cuesForInterpolation.map((c) => c.minSample))).toDecimalPlaces(3).toNumber(),
-          maxSample: new Decimal(Math.max(...cuesForInterpolation.map((c) => c.maxSample))).toDecimalPlaces(3).toNumber(),
-        };
-      }
-
-      cuesInterpolations.set(i, cue);
-    }
-
-    return cuesInterpolations;
-  }
-
   private settleAll() {
-    if (!this._videoController!.isVideoLoaded() || !this.vttFile) {
+    if (!this._videoController!.isVideoLoaded() || (!this.vttFile && !this._pendingCues)) {
       return;
     }
 
-    this._pendingCues = this.vttFile.cues;
     this.renderPendingCues();
   }
 
-  private resolveInterpolatedItemPosition(itemIndex: number, itemPadding: number) {
-    return Math.abs(this._timeline!.getTimecodedFloatingHorizontals().x) + itemIndex * this.style.itemWidth + itemIndex * itemPadding;
-  }
-
   private settlePosition() {
-    if (!this.vttFile) {
-      return;
-    }
-
     if (this._itemsMap.size > 0) {
       for (let item of this._itemsMap.values()) {
         let cue = item.getAudioVttCue();
