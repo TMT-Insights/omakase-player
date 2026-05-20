@@ -75,7 +75,7 @@ export class VideoNativeLoader extends BaseVideoLoader {
           next: ([videoLoadedData, videoLoadedMetadata, mediaMetadata]) => {
             nextCompleteSubject(videoLoad$, {
               frameRate: mediaMetadata.firstVideoTrackFrameRate,
-              initSegmentTimeOffset: mediaMetadata.firstVideoTrackInitSegmentTime
+              initSegmentTimeOffset: mediaMetadata.firstVideoTrackInitSegmentTime,
             });
           },
         });
@@ -95,7 +95,7 @@ export class VideoNativeLoader extends BaseVideoLoader {
           },
         });
 
-      MediaMetadataResolver.getMediaMetadata(sourceUrl, ['firstVideoTrackInitSegmentTime', 'firstVideoTrackFrameRate', 'firstAudioTrackChannelsNumber']).subscribe({
+      MediaMetadataResolver.getMediaMetadata(sourceUrl, ['firstVideoTrackFrameRate', 'firstVideoTrackInitSegmentTime', 'firstAudioTrackChannelsNumber']).subscribe({
         next: (mediaMetadata: MediaMetadata) => {
           console.debug(`Media metadata`, mediaMetadata);
           nextCompleteSubject(mediaMetadata$, mediaMetadata);
@@ -114,7 +114,7 @@ export class VideoNativeLoader extends BaseVideoLoader {
 
           let isAudioOnly = FileUtil.isAudioFile(sourceUrl);
 
-          const frameRate = options?.frameRate ? FrameRateUtil.resolveFrameRate(options.frameRate) : videoLoadEvent.frameRate;
+          const frameRate = videoLoadEvent.frameRate ?? FrameRateUtil.resolveFrameRate(options?.frameRate ?? 30);
           if (!frameRate) {
             throw new Error('Frame rate could not be determined');
           }

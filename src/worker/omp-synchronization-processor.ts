@@ -16,8 +16,13 @@
 
 // @ts-ignore
 class OmpSynchronizationProcessor extends AudioWorkletProcessor {
+  private processCount = 0;
+
   override process(inputs: Float32Array[][], outputs: Float32Array[][], parameters: Record<string, Float32Array>): boolean {
-    this.port.postMessage(''); // simple message to trigger onmessage
+    if (this.processCount % 32 === 0) {
+      this.port.postMessage(''); // keep the sync tick, but not every quantum
+    }
+    this.processCount += 1;
     return true;
   }
 }

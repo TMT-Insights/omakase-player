@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import {forkJoin, from, map, Observable, of, switchMap, tap} from 'rxjs';
-import {ALL_FORMATS, BufferSource, Input, UrlSource} from 'mediabunny';
+import {forkJoin, from, firstValueFrom, map, Observable, of, switchMap, tap} from 'rxjs';
+import {ALL_FORMATS, Input, UrlSource} from 'mediabunny';
 import {formatAuthenticationHeaders} from '../http';
 import {FrameRateUtil} from '../util/frame-rate-util';
 import {errorCompleteObserver, nextCompleteObserver} from '../util/rxjs-util';
@@ -27,34 +27,40 @@ export interface MediaMetadata {
 }
 
 export class MediaMetadataResolver {
-  static getMediaMetadata<K extends keyof MediaMetadata>(src: string, keys: K[]): Observable<Pick<MediaMetadata, K>> {
-    return this.getMediaMetadataWithMediabunny(src, keys);
-  }
+  private static readonly mediaMetadataCache: Map<string, Promise<MediaMetadata>> = new Map<string, Promise<MediaMetadata>>();
 
   static async probeFirstAudioTrackChannelsNumber(src: string): Promise<number | undefined> {
-    const response = await fetch(src, {
-      headers: {
-        ...formatAuthenticationHeaders(src),
-        Range: 'bytes=0-262143',
-      },
-    });
+    const mediaMetadata = await this.getCachedMediaMetadata(src);
+    return mediaMetadata.firstAudioTrackChannelsNumber;
+  }
 
-    if (response.status !== 206) {
-      return void 0;
+  static getMediaMetadata<K extends keyof MediaMetadata>(src: string, keys: K[]): Observable<Pick<MediaMetadata, K>> {
+    return from(this.getCachedMediaMetadata(src)).pipe(
+      map((mediaMetadata) => {
+        const picked = {} as Pick<MediaMetadata, K>;
+        keys.forEach((key) => {
+          picked[key] = mediaMetadata[key] as MediaMetadata[K];
+        });
+        return picked;
+      })
+    );
+  }
+
+  private static getCachedMediaMetadata(src: string): Promise<MediaMetadata> {
+    const cached = this.mediaMetadataCache.get(src);
+    if (cached) {
+      return cached;
     }
 
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const input = new Input({
-      source: new BufferSource(bytes),
-      formats: ALL_FORMATS,
+    const promise = firstValueFrom(
+      this.getMediaMetadataWithMediabunny(src, ['firstVideoTrackFrameRate', 'firstVideoTrackInitSegmentTime', 'firstAudioTrackChannelsNumber'])
+    ).catch((error) => {
+      this.mediaMetadataCache.delete(src);
+      throw error;
     });
 
-    try {
-      const audioTracks = await input.getAudioTracks();
-      return audioTracks[0]?.numberOfChannels;
-    } finally {
-      input.dispose();
-    }
+    this.mediaMetadataCache.set(src, promise);
+    return promise;
   }
 
   private static getMediaMetadataWithMediabunny<K extends keyof MediaMetadata>(src: string, keys: K[]): Observable<Pick<MediaMetadata, K>> {
