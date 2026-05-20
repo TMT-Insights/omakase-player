@@ -141,7 +141,6 @@ import {UrlUtil} from '../util/url-util';
 import {BrowserProvider} from '../common/browser-provider';
 import {FileUtil} from '../util/file-util';
 import {OmpAudioEffectFactory, OmpAudioEffectFilter, OmpAudioEffectParam, OmpAudioEffectsGraph, OmpAudioEffectsGraphDef, OmpAudioEffectsRegistry} from '../audio'; // @ts-ignore
-import synchronizationProcessor from '../worker/omp-synchronization-processor.js?raw'; // @ts-ignore
 import blackMp4Base64 from '../../assets/black.mp4.base64.txt?raw';
 import {MediaElementPlayback} from './media-element-playback';
 import {MediaElementUtil} from '../util/media-element-util';
@@ -153,6 +152,29 @@ import silentWavBase64 from '../../assets/silent.wav.base64.txt?raw';
 import {SidecarAudioApi} from '../api/sidecar-audio-api';
 import {SidecarAudioFactory} from './sidecar-audio-factory';
 import {OmpAudioEffectsGraphConnection, OmpAudioEffectsSlot} from '../audio/model';
+
+const synchronizationProcessor = `
+class OmpSynchronizationProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.processCount = 0;
+  }
+
+  process(inputs, outputs, parameters) {
+    if (this.processCount % 32 === 0) {
+      this.port.postMessage('');
+    }
+    this.processCount += 1;
+    return true;
+  }
+}
+
+try {
+  registerProcessor('omp-synchronization-processor', OmpSynchronizationProcessor);
+} catch (err) {
+  console.info('Failed to register omp-synchronization-processor. This probably means it was already registered.');
+}
+`;
 
 export interface VideoControllerConfig {
   frameDurationSpillOverCorrection: number;

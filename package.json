@@ -27,9 +27,8 @@
         "check": "tsc --noEmit",
         "format": "prettier . --write",
         "dev:tsc": "rm -rf dist/lib && tsc --watch",
-        "build:workers": "vite build --config vite.workers.config.mjs",
         "build:style": "vite build --config vite.style.config.mjs",
-        "build:prod": "rm -rf dist && npm run build:workers && npm run build:style && tsc --noEmit && vite build --debug",
+        "build:prod": "rm -rf dist && npm run build:style && tsc --noEmit && vite build --debug",
         "postinstall": "patch-package"
     },
     "dependencies": {

@@ -19,13 +19,120 @@ import {BehaviorSubject, Observable, Subject, takeUntil} from 'rxjs';
 import {AudioMeterStandard, OmpAudioPeakProcessorState} from './model';
 import {completeUnsubscribeSubjects, nextCompleteObserver, nextCompleteSubject} from '../util/rxjs-util';
 import {BlobUtil} from '../util/blob-util';
-
-// import workers for audio processing
-// @ts-ignore
-import peakSampleProcessor from '../worker/omp-peak-sample-processor.js?raw';
-// @ts-ignore
-import truePeakProcessor from '../worker/omp-true-peak-processor.js?raw';
 import {AudioPeakProcessorApi} from '../api/audio-peak-processor-api';
+
+const peakSampleProcessor = `
+class OmpPeakSampleProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    const peaks = input.map((channel) => {
+      let max = 0;
+      for (let s = 0; s < channel.length; s += 1) {
+        const abs = Math.abs(channel[s]);
+        if (abs > max) max = abs;
+      }
+      return max;
+    });
+    this.port.postMessage({type: 'peaks', peaks});
+    return true;
+  }
+}
+
+try {
+  registerProcessor('omp-peak-sample-processor', OmpPeakSampleProcessor);
+} catch (err) {
+  console.info('Failed to register omp-peak-sample-processor. This probably means it was already registered.');
+}
+`;
+
+const truePeakProcessor = `
+function calculateLPFCoefficients(numCoefficients, upsampleFactor) {
+  const retCoefs = [];
+  const fcRel = 1.0 / (4.0 * upsampleFactor);
+  const minCoefN = 1 - Math.ceil(numCoefficients / 2);
+  const maxCoefN = Math.floor(numCoefficients / 2);
+  for (let n = minCoefN; n <= maxCoefN; n++) {
+    const wn = 0.54 + 0.46 * Math.cos(2.0 * Math.PI * n / numCoefficients);
+    let hn = 0.0;
+    if (n == 0) {
+      hn = 2.0 * fcRel;
+    } else {
+      hn = Math.sin(2.0 * Math.PI * fcRel * n) / (Math.PI * n);
+    }
+    hn = (wn * hn) * upsampleFactor;
+    retCoefs.push(hn);
+  }
+  return retCoefs;
+}
+
+function filterSample(lpfBuffer, lpfCoefficients, upsampleFactor) {
+  const upsampled = [];
+  for (let nA = 0; nA < upsampleFactor; nA += 1) {
+    let nT = 0;
+    let retVal = 0;
+    for (let nc = nA; nc < lpfCoefficients.length; nc += upsampleFactor) {
+      retVal += (lpfCoefficients[nc] * lpfBuffer[lpfBuffer.length - 1 - nT]);
+      nT += 1;
+    }
+    upsampled.push(retVal);
+  }
+  return upsampled;
+}
+
+function truePeakValues(input, lpfBuffers, lpfCoefficients, upsampleFactor) {
+  return input.map((channel, i) => {
+    const lpfBuffer = lpfBuffers[i];
+    let max = 0;
+    for (let s = 0; s < channel.length; s++) {
+      const sample = channel[s];
+      lpfBuffer.push(sample);
+      lpfBuffer.shift();
+      const upSampled = filterSample(lpfBuffer, lpfCoefficients, upsampleFactor);
+      for (let u = 0; u < upSampled.length; u++) {
+        const uAbs = Math.abs(upSampled[u]);
+        if (uAbs > max) {
+          max = uAbs;
+        }
+      }
+    }
+    return max;
+  });
+}
+
+class TruePeakProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.numCoefficients = 33;
+    this.sampleRate = sampleRate;
+    this.upsampleFactor = this.sampleRate > 80000 ? 2 : 4;
+    this.lpfCoefficients = calculateLPFCoefficients(this.numCoefficients, this.upsampleFactor);
+    this.lpfBuffers = [];
+    this.port.postMessage({type: 'message', message: 'true peak inited? ' + this.sampleRate});
+    this.processCount = 0;
+  }
+
+  process(inputs) {
+    const input = inputs[0];
+    if (input.length > this.lpfBuffers.length) {
+      for (let i = 1; i <= input.length; i += 1) {
+        if (i > this.lpfBuffers.length) {
+          this.lpfBuffers.push(new Array(this.numCoefficients).fill(0));
+        }
+      }
+    }
+    const maxes = truePeakValues(input, this.lpfBuffers, this.lpfCoefficients, this.upsampleFactor);
+    this.port.postMessage({type: 'peaks', peaks: maxes});
+    this.processCount += 1;
+    return true;
+  }
+}
+
+try {
+  registerProcessor('omp-true-peak-processor', TruePeakProcessor);
+} catch (err) {
+  console.info('Failed to register omp-true-peak-processor. This probably means it was already registered.');
+}
+`;
 
 export class OmpAudioPeakProcessor implements AudioPeakProcessorApi, Destroyable {
   public readonly onAudioWorkletLoaded$: BehaviorSubject<AudioWorkletNode | undefined> = new BehaviorSubject<AudioWorkletNode | undefined>(void 0);
