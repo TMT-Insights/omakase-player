@@ -15,7 +15,7 @@
  */
 
 import {forkJoin, from, map, Observable, of, switchMap, tap} from 'rxjs';
-import {ALL_FORMATS, Input, UrlSource} from 'mediabunny';
+import {ALL_FORMATS, BufferSource, Input, UrlSource} from 'mediabunny';
 import {formatAuthenticationHeaders} from '../http';
 import {FrameRateUtil} from '../util/frame-rate-util';
 import {errorCompleteObserver, nextCompleteObserver} from '../util/rxjs-util';
@@ -29,6 +29,32 @@ export interface MediaMetadata {
 export class MediaMetadataResolver {
   static getMediaMetadata<K extends keyof MediaMetadata>(src: string, keys: K[]): Observable<Pick<MediaMetadata, K>> {
     return this.getMediaMetadataWithMediabunny(src, keys);
+  }
+
+  static async probeFirstAudioTrackChannelsNumber(src: string): Promise<number | undefined> {
+    const response = await fetch(src, {
+      headers: {
+        ...formatAuthenticationHeaders(src),
+        Range: 'bytes=0-262143',
+      },
+    });
+
+    if (response.status !== 206) {
+      return void 0;
+    }
+
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const input = new Input({
+      source: new BufferSource(bytes),
+      formats: ALL_FORMATS,
+    });
+
+    try {
+      const audioTracks = await input.getAudioTracks();
+      return audioTracks[0]?.numberOfChannels;
+    } finally {
+      input.dispose();
+    }
   }
 
   private static getMediaMetadataWithMediabunny<K extends keyof MediaMetadata>(src: string, keys: K[]): Observable<Pick<MediaMetadata, K>> {

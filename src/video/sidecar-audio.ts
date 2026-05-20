@@ -41,7 +41,7 @@ import {HTMLMediaElementEvents, OmpAudioElement} from '../media-element/omp-medi
 import {httpGet} from '../http';
 import {VideoControllerApi} from './video-controller-api';
 import {AuthConfig} from '../common/authentication';
-import {MediaMetadata, MediaMetadataResolver} from '../tools/media-metadata-resolver';
+import {MediaMetadataResolver} from '../tools/media-metadata-resolver';
 import {audioChannelsDefault} from '../constants';
 import {BrowserProvider} from '../common/browser-provider';
 import {OmpAudioEffectFilter, OmpAudioEffectsGraphDef, OmpAudioEffectParam, OmpAudioEffectsGraph} from '../audio';
@@ -695,28 +695,20 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
       // initial track activation
       this.setActiveInactive(this._audioTrack.active);
 
-      let mediaMetadata$ = new Subject<MediaMetadata>();
-
-      MediaMetadataResolver.getMediaMetadata(this._audioTrack.src, ['firstAudioTrackChannelsNumber']).subscribe({
-        next: (mediaMetadata: MediaMetadata) => {
-          console.debug(`Media metadata`, mediaMetadata);
-          nextCompleteSubject(mediaMetadata$, mediaMetadata);
-        },
-      });
-
-      combineLatest([this._ompAudioElement.onLoaded$.pipe(filter((p) => !!p)), mediaMetadata$])
+      this._ompAudioElement.onLoaded$
+        .pipe(filter((p) => !!p))
         .pipe(takeUntil(this._destroyed$))
         .pipe(take(1))
         .subscribe({
-          next: ([ompMediaElementLoadedEvent, mediaMetadata]) => {
+          next: () => {
             this._mediaElementAudioSourceNode = this._videoController.getAudioContext().createMediaElementSource(this._ompAudioElement.mediaElement);
             this._mediaElementAudioSourceNode.channelCountMode = 'max';
 
             // connect to audio chain
             this._mediaElementAudioSourceNode.connect(this._audioInputIfNode);
 
-            // set number of channels
-            this._channelsNumber = mediaMetadata.firstAudioTrackChannelsNumber ? mediaMetadata.firstAudioTrackChannelsNumber : audioChannelsDefault;
+            // set number of channels immediately so playback can start streaming
+            this._channelsNumber = this._audioTrack.channelCount ?? audioChannelsDefault;
 
             // set number of channels to all audio nodes
             this._mediaElementAudioSourceNode.channelCount = this.getChannelsNumber();
@@ -732,6 +724,20 @@ export class OmpSidecarAudio extends BaseOmpSidecarAudio {
             this.emitStateChange();
 
             nextCompleteObserver(observer, event);
+
+            void MediaMetadataResolver.probeFirstAudioTrackChannelsNumber(this._audioTrack.src)
+              .then((channelsNumber) => {
+                if (channelsNumber && channelsNumber !== this._channelsNumber && this._mediaElementAudioSourceNode) {
+                  this._channelsNumber = channelsNumber;
+                  this._mediaElementAudioSourceNode.channelCount = channelsNumber;
+                  this._audioInputIfNode.channelCount = channelsNumber;
+                  this._audioTrack.channelCount = channelsNumber;
+                  this.emitStateChange();
+                }
+              })
+              .catch((error) => {
+                console.debug(`Best-effort audio channel probe failed`, error);
+              });
           },
           error: (error) => {
             this.onLoaded$.error(error);

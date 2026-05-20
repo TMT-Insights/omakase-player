@@ -31,9 +31,35 @@ import {AudioTrackLaneApi} from '../../api';
 import {AudioVttFile} from '../../vtt';
 import {VttAdapter, VttAdapterConfig} from '../../common/vtt-adapter';
 import {VttTimelineLane, VttTimelineLaneConfig} from '../vtt-timeline-lane';
+import {ALL_FORMATS, AudioBufferSink, Input, UrlSource} from 'mediabunny';
+
+type ProgressiveAudioCueStore = {
+  cues: AudioVttCue[];
+  cueKeys: Set<string>;
+};
+
+function computeBufferPeaks(buffer: AudioBuffer) {
+  let minSample = 1;
+  let maxSample = -1;
+
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const samples = buffer.getChannelData(channel);
+    for (let i = 0; i < samples.length; i += 1) {
+      const sample = samples[i];
+      if (sample < minSample) minSample = sample;
+      if (sample > maxSample) maxSample = sample;
+    }
+  }
+
+  return {
+    minSample: Number(minSample.toFixed(3)),
+    maxSample: Number(maxSample.toFixed(3)),
+  };
+}
 
 export interface AudioTrackLaneConfig extends VttTimelineLaneConfig<AudioTrackLaneStyle>, VttAdapterConfig<AudioVttFile> {
   axiosConfig?: AxiosRequestConfig;
+  progressiveSourceUrl?: string;
 }
 
 export interface AudioTrackLaneStyle extends TimelineLaneStyle {
@@ -72,6 +98,8 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   protected _timecodedEventCatcher?: Konva.Rect;
   protected _itemsGroup?: Konva.Group;
   private _pendingCues: AudioVttCue[] | null = null;
+  private _progressiveCueStore: ProgressiveAudioCueStore = {cues: [], cueKeys: new Set<string>()};
+  private _progressiveAbortControllers: Set<AbortController> = new Set<AbortController>();
 
   constructor(config: TimelineLaneConfigDefaultsExcluded<AudioTrackLaneConfig>) {
     super(timelineLaneComposeConfig(configDefault, config));
@@ -139,6 +167,15 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
     if (this._videoController!.isVideoLoaded() && this.vttFile) {
       this.settleAll();
+    }
+
+    if (this._config.progressiveSourceUrl && !this.vttUrl) {
+      this.startProgressiveWaveform(this._videoController!.getCurrentTime());
+      this._videoController!.onSeeked$.pipe(takeUntil(this._destroyed$)).subscribe({
+        next: () => {
+          this.startProgressiveWaveform(this._videoController!.getCurrentTime());
+        },
+      });
     }
   }
 
@@ -299,7 +336,95 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     }
   }
 
+  private startProgressiveWaveform(startTimestamp: number) {
+    if (!this._config.progressiveSourceUrl || this.vttUrl) {
+      return;
+    }
+
+    const abortController = new AbortController();
+    this._progressiveAbortControllers.add(abortController);
+
+    void this.buildProgressiveWaveform(this._config.progressiveSourceUrl, startTimestamp, abortController.signal)
+      .catch((error) => {
+        if (!abortController.signal.aborted) {
+          console.error(error);
+        }
+      })
+      .finally(() => {
+        this._progressiveAbortControllers.delete(abortController);
+      });
+  }
+
+  private async buildProgressiveWaveform(sourceUrl: string, startTimestamp: number, signal?: AbortSignal) {
+    const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const input = new Input({source: new UrlSource(sourceUrl), formats: ALL_FORMATS});
+    let updateInFlight = false;
+    let updateQueued = false;
+
+    const flushWaveform = async () => {
+      if (updateInFlight) {
+        updateQueued = true;
+        return;
+      }
+
+      updateInFlight = true;
+
+      try {
+        do {
+          updateQueued = false;
+          this.setCues(this._progressiveCueStore.cues.slice());
+          await nextFrame();
+        } while (updateQueued && !signal?.aborted);
+      } finally {
+        updateInFlight = false;
+      }
+    };
+
+    try {
+      const audioTrack = await input.getPrimaryAudioTrack();
+      if (!audioTrack) {
+        throw new Error('No audio track available for waveform generation');
+      }
+
+      for await (const wrappedBuffer of new AudioBufferSink(audioTrack).buffers(startTimestamp)) {
+        if (signal?.aborted) break;
+
+        const peaks = computeBufferPeaks(wrappedBuffer.buffer);
+        const startTime = wrappedBuffer.timestamp;
+        const endTime = wrappedBuffer.timestamp + wrappedBuffer.duration;
+        const cueKey = `${startTime.toFixed(3)}:${endTime.toFixed(3)}:${peaks.minSample}:${peaks.maxSample}`;
+
+        if (!this._progressiveCueStore.cueKeys.has(cueKey)) {
+          this._progressiveCueStore.cueKeys.add(cueKey);
+          this._progressiveCueStore.cues.push({
+            id: `waveform-${this._progressiveCueStore.cues.length}`,
+            index: this._progressiveCueStore.cues.length,
+            startTime,
+            endTime,
+            text: '',
+            minSample: peaks.minSample,
+            maxSample: peaks.maxSample,
+          });
+          this._progressiveCueStore.cues.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+        }
+
+        void flushWaveform();
+      }
+
+      while (updateInFlight && !signal?.aborted) {
+        await nextFrame();
+      }
+
+      this.setCues(this._progressiveCueStore.cues.slice());
+    } finally {
+      input.dispose();
+      this.setCues(this._progressiveCueStore.cues.slice());
+    }
+  }
+
   override destroy() {
+    this._progressiveAbortControllers.forEach((controller) => controller.abort());
+    this._progressiveAbortControllers.clear();
     destroyer(...this._itemsMap.values());
     super.destroy();
   }
