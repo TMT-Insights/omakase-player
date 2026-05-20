@@ -905,11 +905,11 @@ export class PlayerChromingDomController extends DomController implements Player
         ${
           this._config.playerChroming.theme !== PlayerChromingTheme.Audio
             ? `
-            <omakase-dropdown-list id="audio-dropdown-list-${this._config.playerHTMLElementId}" class="align-left" title="AUDIO" width="125" type="radio"></omakase-dropdown-list>
-            <omakase-dropdown-list id="sidecar-dropdown-list-${this._config.playerHTMLElementId}" multiselect="true" class="d-none align-left" title="SIDECAR AUDIO" width="125" type="checkbox"></omakase-dropdown-list>`
+            <omakase-dropdown-list id="audio-dropdown-list-${this._config.playerHTMLElementId}" class="align-left" title="AUDIO" width="220" type="radio"></omakase-dropdown-list>
+            <omakase-dropdown-list id="sidecar-dropdown-list-${this._config.playerHTMLElementId}" multiselect="true" class="d-none align-left" title="SIDECAR AUDIO" width="220" type="checkbox"></omakase-dropdown-list>`
             : ''
         }
-        <omakase-dropdown-list id="text-dropdown-list-${this._config.playerHTMLElementId}" class="d-none align-left" title="TEXT" width="125" type="radio"></omakase-dropdown-list>
+        <omakase-dropdown-list id="text-dropdown-list-${this._config.playerHTMLElementId}" class="d-none align-left" title="TEXT" width="250" type="radio"></omakase-dropdown-list>
     </omakase-dropdown>`;
   };
 
