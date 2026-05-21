@@ -35,6 +35,7 @@ import {ALL_FORMATS, AudioBufferSink, Input, InputAudioTrack, UrlSource} from 'm
 
 type ProgressiveAudioCueStore = {
   cues: AudioVttCue[];
+  cuesByBucket: Map<number, AudioVttCue>;
   cueKeys: Set<string>;
 };
 
@@ -47,11 +48,28 @@ type ProgressiveWaveformSession = {
   duration: number;
 };
 
+type ProgressiveRange = {
+  start: number;
+  end: number;
+};
+
+const AUDIO_WAVEFORM_CHUNK_SECONDS = 2.5;
+
+function toWaveformBucketKey(time: number) {
+  return Math.round(time * 1000);
+}
+
+type WaveformChunk = {
+  startTime: number;
+  endTime: number;
+  peaks: ReturnType<typeof computeBufferPeaks>;
+};
+
 function computeBufferPeaks(buffer: AudioBuffer, startSample = 0, endSample = buffer.length) {
   let minSample = 1;
   let maxSample = -1;
   const sampleCount = Math.max(1, endSample - startSample);
-  const maxSamplesToInspectPerChannel = 2048;
+  const maxSamplesToInspectPerChannel = 512;
   const sampleStep = Math.max(1, Math.floor(sampleCount / maxSamplesToInspectPerChannel));
 
   for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
@@ -91,6 +109,43 @@ function normalizeWaveformCues(cues: AudioVttCue[]) {
   }
 
   return normalizedCues;
+}
+
+function getWaveformBucketKeysInRange(startTime: number, endTime: number, cadenceSeconds: number): number[] {
+  const keys: number[] = [];
+  const cadenceMs = Math.round(cadenceSeconds * 1000);
+  const startKey = Math.floor(startTime * 1000 / cadenceMs) * cadenceMs;
+  const endKey = Math.ceil(endTime * 1000 / cadenceMs) * cadenceMs;
+
+  for (let bucketKey = startKey; bucketKey <= endKey; bucketKey += cadenceMs) {
+    keys.push(bucketKey);
+  }
+
+  return keys;
+}
+
+function buildWaveformChunks(buffer: AudioBuffer, bufferStartTimestamp: number, bufferEndTimestamp: number, cadenceSeconds: number): WaveformChunk[] {
+  const chunks: WaveformChunk[] = [];
+  const sampleRate = buffer.sampleRate;
+  const alignedChunkStart = Math.floor(bufferStartTimestamp / cadenceSeconds) * cadenceSeconds;
+
+  for (let chunkStartTimestamp = alignedChunkStart; chunkStartTimestamp < bufferEndTimestamp; chunkStartTimestamp += cadenceSeconds) {
+    const chunkEndTimestamp = chunkStartTimestamp + cadenceSeconds;
+    if (chunkEndTimestamp <= bufferStartTimestamp) {
+      continue;
+    }
+
+    const startSample = Math.max(0, Math.floor((chunkStartTimestamp - bufferStartTimestamp) * sampleRate));
+    const endSample = Math.min(buffer.length, Math.max(startSample + 1, Math.ceil((chunkEndTimestamp - bufferStartTimestamp) * sampleRate)));
+
+    chunks.push({
+      startTime: chunkStartTimestamp,
+      endTime: chunkEndTimestamp,
+      peaks: computeBufferPeaks(buffer, startSample, endSample),
+    });
+  }
+
+  return chunks;
 }
 
 export interface AudioTrackLaneConfig extends VttTimelineLaneConfig<AudioTrackLaneStyle>, VttAdapterConfig<AudioVttFile> {
@@ -134,15 +189,17 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   protected _timecodedEventCatcher?: Konva.Rect;
   protected _itemsGroup?: Konva.Group;
   private _pendingCues: AudioVttCue[] | null = null;
-  private _progressiveCueStore: ProgressiveAudioCueStore = {cues: [], cueKeys: new Set<string>()};
+  private _progressiveCueStore: ProgressiveAudioCueStore = {cues: [], cuesByBucket: new Map<number, AudioVttCue>(), cueKeys: new Set<string>()};
   private _pendingProgressiveVisibleCues: AudioVttCue[] = [];
   private _progressiveMode = false;
   private _progressiveRequestedEndTimestamp = 0;
   private _progressiveDemandResolver?: () => void;
   private _progressiveSession?: ProgressiveWaveformSession;
-  static readonly waveformChunkSeconds = 3;
-  static readonly progressiveWaveformChunkSeconds = 16;
-  private static readonly progressiveWaveformRenderIntervalMs = 1000 / 16;
+  private _progressiveBackfillRange?: ProgressiveRange;
+  private _progressiveGenerationFrontier = 0;
+  static readonly waveformChunkSeconds = AUDIO_WAVEFORM_CHUNK_SECONDS;
+  static readonly progressiveWaveformChunkSeconds = AudioTrackLane.waveformChunkSeconds;
+  private static readonly progressiveWaveformRenderIntervalMs = 1000 / 8;
   private static readonly progressiveWaveformPendingLanes: Set<AudioTrackLane> = new Set<AudioTrackLane>();
   private static readonly progressiveWaveformPendingLayers: Set<Konva.Layer> = new Set<Konva.Layer>();
   private static progressiveWaveformRenderTimeoutId: number | null = null;
@@ -219,6 +276,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
     if (this._config.progressiveSourceUrl && !this.vttUrl) {
       this._progressiveMode = true;
+      this._progressiveGenerationFrontier = 0;
       this.startProgressiveWaveform(this._videoController!.getCurrentTime());
       this._videoController!.onSeeked$.pipe(takeUntil(this._destroyed$)).subscribe({
         next: () => {
@@ -354,7 +412,19 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   private getProgressiveVisibleCues() {
     if (!this._timeline) return [] as AudioVttCue[];
 
-    return this.getVisibleCueSubset(this._progressiveCueStore.cues);
+    const visibleTimeRange = this._timeline.getVisibleTimeRange();
+    const cadenceSeconds = AudioTrackLane.progressiveWaveformChunkSeconds;
+    const visibleBucketKeys = getWaveformBucketKeysInRange(visibleTimeRange.start, visibleTimeRange.end, cadenceSeconds);
+    const visibleCues: AudioVttCue[] = [];
+
+    for (const bucketKey of visibleBucketKeys) {
+      const cue = this._progressiveCueStore.cuesByBucket.get(bucketKey);
+      if (cue) {
+        visibleCues.push(cue);
+      }
+    }
+
+    return visibleCues;
   }
 
   private appendProgressiveCue(cue: AudioVttCue) {
@@ -362,6 +432,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
     const visibleTimeRange = this._timeline.getVisibleTimeRange();
     this._progressiveCueStore.cues.push(cue);
+    this._progressiveCueStore.cuesByBucket.set(toWaveformBucketKey(cue.startTime), cue);
     if (cue.endTime < visibleTimeRange.start || cue.startTime > visibleTimeRange.end) {
       return;
     }
@@ -636,25 +707,36 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   }
 
   private resolveInterpolatedItemPosition(itemIndex: number, itemPadding: number) {
-    return Math.abs(this._timeline!.getTimecodedFloatingHorizontals().x) + itemIndex * this.style.itemWidth + itemIndex * itemPadding;
+    return itemIndex * this.style.itemWidth + itemIndex * itemPadding;
   }
 
   private settlePosition() {
-    if (!this._videoController!.isVideoLoaded() || !this.vttFile) {
+    if (!this._videoController!.isVideoLoaded()) {
+      return;
+    }
+
+    if (this._progressiveMode && !this.vttUrl) {
+      if (this._itemsMap.size > 0) {
+        for (const [cueIndex, item] of [...this._itemsMap.entries()]) {
+          const cue = item.getAudioVttCue();
+          const x = this._timeline!.timeToTimelinePosition(cue.startTime);
+          item.setPosition({x});
+        }
+      }
+
+      this.renderProgressiveVisibleCues();
+      return;
+    }
+
+    if (!this.vttFile) {
       return;
     }
 
     if (this._itemsMap.size > 0) {
-      let visibleTimeRange = this._timeline!.getVisibleTimeRange();
       for (const [cueIndex, item] of [...this._itemsMap.entries()]) {
         let cue = item.getAudioVttCue();
-        if ((cue.startTime >= visibleTimeRange.start && cue.startTime <= visibleTimeRange.end) || (cue.endTime >= visibleTimeRange.start && cue.endTime <= visibleTimeRange.end)) {
-          let x = this._timeline!.timeToTimelinePosition(cue.startTime);
-          item.setPosition({x});
-        } else {
-          item.destroy();
-          this._itemsMap.delete(cueIndex);
-        }
+        let x = this._timeline!.timeToTimelinePosition(cue.startTime);
+        item.setPosition({x});
       }
     }
 
@@ -679,14 +761,35 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       return;
     }
 
-    this._progressiveRequestedEndTimestamp = Math.max(this._progressiveRequestedEndTimestamp, this.getProgressiveTargetEndTimestamp(startTimestamp));
-    this._progressiveDemandResolver?.();
-    this._progressiveDemandResolver = undefined;
+    const duration = this._videoController!.getDuration();
+    const normalizedStartTimestamp = Math.max(0, Math.min(startTimestamp, duration));
 
     if (this._progressiveSession && this._progressiveSession.sourceUrl === sourceUrl) {
+      if (normalizedStartTimestamp > this._progressiveGenerationFrontier) {
+        this._progressiveBackfillRange = {
+          start: this._progressiveGenerationFrontier,
+          end: normalizedStartTimestamp,
+        };
+      }
+
+      this._progressiveRequestedEndTimestamp = duration;
+      this._progressiveSession.cursorTimestamp = normalizedStartTimestamp;
+      this._progressiveDemandResolver?.();
+      this._progressiveDemandResolver = undefined;
       this.renderProgressiveVisibleCues();
       return;
     }
+
+    this._progressiveBackfillRange = normalizedStartTimestamp > 0
+      ? {
+          start: 0,
+          end: normalizedStartTimestamp,
+        }
+      : undefined;
+
+    this._progressiveRequestedEndTimestamp = duration;
+    this._progressiveDemandResolver?.();
+    this._progressiveDemandResolver = undefined;
 
     if (this._progressiveSession) {
       this._progressiveSession.abortController.abort();
@@ -697,8 +800,9 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       sourceUrl,
       abortController,
       input: new Input({source: new UrlSource(sourceUrl), formats: ALL_FORMATS}),
-      cursorTimestamp: startTimestamp,
-      duration: this._videoController!.getDuration(),
+      // Keep progressive chunk boundaries aligned across lanes.
+      cursorTimestamp: normalizedStartTimestamp,
+      duration,
     };
     this._progressiveSession = session;
 
@@ -735,7 +839,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
         requestIdle(() => {
           this.flushPendingProgressiveCues();
           resolve();
-        }, {timeout: 250});
+        }, {timeout: 16});
         return;
       }
 
@@ -756,12 +860,21 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       }
 
       session.audioTrack = audioTrack;
+      const audioBufferSink = new AudioBufferSink(audioTrack);
       session.duration = this._videoController!.getDuration();
       let chunksSinceYield = 0;
       let lastYieldAt = performance.now();
 
       while (!session.abortController.signal.aborted) {
         if (session.cursorTimestamp >= this._progressiveRequestedEndTimestamp) {
+          if (this._progressiveBackfillRange) {
+            const backfillRange = this._progressiveBackfillRange;
+            this._progressiveBackfillRange = undefined;
+            session.cursorTimestamp = backfillRange.start;
+            this._progressiveRequestedEndTimestamp = backfillRange.end;
+            continue;
+          }
+
           if (this._progressiveRequestedEndTimestamp < session.duration) {
             this._progressiveRequestedEndTimestamp = Math.min(
               session.duration,
@@ -776,41 +889,39 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
         const chunkEndTimestamp = Math.min(this._progressiveRequestedEndTimestamp, session.cursorTimestamp + AudioTrackLane.progressiveWaveformChunkSeconds);
 
-        for await (const wrappedBuffer of new AudioBufferSink(audioTrack).buffers(session.cursorTimestamp, chunkEndTimestamp)) {
+        for await (const wrappedBuffer of audioBufferSink.buffers(session.cursorTimestamp, chunkEndTimestamp)) {
           if (session.abortController.signal.aborted) {
             break;
           }
 
           const bufferStartTimestamp = wrappedBuffer.timestamp;
           const bufferEndTimestamp = wrappedBuffer.timestamp + wrappedBuffer.duration;
-          const sampleRate = wrappedBuffer.buffer.sampleRate;
+          const cadenceSeconds = AudioTrackLane.progressiveWaveformChunkSeconds;
 
-          for (let chunkStartTimestamp = bufferStartTimestamp; chunkStartTimestamp < bufferEndTimestamp && !session.abortController.signal.aborted; ) {
-            const chunkEndTimestamp = Math.min(bufferEndTimestamp, chunkStartTimestamp + AudioTrackLane.progressiveWaveformChunkSeconds);
-            const startSample = Math.max(0, Math.floor((chunkStartTimestamp - bufferStartTimestamp) * sampleRate));
-            const endSample = Math.min(wrappedBuffer.buffer.length, Math.max(startSample + 1, Math.ceil((chunkEndTimestamp - bufferStartTimestamp) * sampleRate)));
-            const peaks = computeBufferPeaks(wrappedBuffer.buffer, startSample, endSample);
-            const cueKey = `${chunkStartTimestamp.toFixed(3)}:${chunkEndTimestamp.toFixed(3)}:${peaks.minSample}:${peaks.maxSample}`;
+          for (const chunk of buildWaveformChunks(wrappedBuffer.buffer, bufferStartTimestamp, bufferEndTimestamp, cadenceSeconds)) {
+            if (session.abortController.signal.aborted) {
+              break;
+            }
+
+            const cueKey = `${chunk.startTime.toFixed(3)}:${chunk.endTime.toFixed(3)}:${chunk.peaks.minSample}:${chunk.peaks.maxSample}`;
 
             if (!this._progressiveCueStore.cueKeys.has(cueKey)) {
               this._progressiveCueStore.cueKeys.add(cueKey);
               const cue = {
                 id: `waveform-${this._progressiveCueStore.cues.length}`,
                 index: this._progressiveCueStore.cues.length,
-                startTime: chunkStartTimestamp,
-                endTime: chunkEndTimestamp,
+                startTime: chunk.startTime,
+                endTime: chunk.endTime,
                 text: '',
-                minSample: peaks.minSample,
-                maxSample: peaks.maxSample,
+                minSample: chunk.peaks.minSample,
+                maxSample: chunk.peaks.maxSample,
               };
               this.appendProgressiveCue(cue);
             }
 
-            chunkStartTimestamp = chunkEndTimestamp;
-
             chunksSinceYield += 1;
             const now = performance.now();
-            if (chunksSinceYield >= 192 || now - lastYieldAt >= 32) {
+            if (chunksSinceYield >= 8 || now - lastYieldAt >= 32) {
               chunksSinceYield = 0;
               lastYieldAt = now;
               await this.yieldProgressiveWork();
@@ -818,6 +929,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
           }
 
           session.cursorTimestamp = bufferEndTimestamp;
+          this._progressiveGenerationFrontier = Math.max(this._progressiveGenerationFrontier, session.cursorTimestamp);
         }
 
       }
@@ -832,7 +944,9 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     this._progressiveDemandResolver?.();
     this._progressiveDemandResolver = undefined;
     this._progressiveRequestedEndTimestamp = 0;
-    this._progressiveCueStore = {cues: [], cueKeys: new Set<string>()};
+    this._progressiveCueStore = {cues: [], cuesByBucket: new Map<number, AudioVttCue>(), cueKeys: new Set<string>()};
+    this._progressiveBackfillRange = undefined;
+    this._progressiveGenerationFrontier = 0;
 
     if (this._progressiveSession) {
       this._progressiveSession.abortController.abort();
