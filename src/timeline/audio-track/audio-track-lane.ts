@@ -16,12 +16,10 @@
 
 import {TIMELINE_LANE_CONFIG_DEFAULT, timelineLaneComposeConfig, TimelineLaneConfigDefaultsExcluded, TimelineLaneStyle, VTT_DOWNSAMPLE_CONFIG_DEFAULT} from '../timeline-lane';
 import Konva from 'konva';
-import {fillLinearGradientAudioPeak} from '../../constants';
 import {combineLatest, debounceTime, filter, takeUntil, zip} from 'rxjs';
 import {AudioVttCue} from '../../types';
 import {AudioTrackLaneItem} from './audio-track-lane-item';
 import Decimal from 'decimal.js';
-import {ColorUtil} from '../../util/color-util';
 import {Timeline} from '../timeline';
 import {destroyer} from '../../util/destroy-util';
 import {AxiosRequestConfig} from 'axios';
@@ -53,7 +51,8 @@ type ProgressiveRange = {
   end: number;
 };
 
-const AUDIO_WAVEFORM_CHUNK_SECONDS = 2.5;
+const AUDIO_WAVEFORM_CHUNK_SECONDS = 0.25;
+const PROGRESSIVE_WAVEFORM_RENDER_BUFFER_BUCKETS = 2;
 
 function toWaveformBucketKey(time: number) {
   return Math.round(time * 1000);
@@ -160,6 +159,7 @@ export interface AudioTrackLaneStyle extends TimelineLaneStyle {
   itemWidth: number;
   itemMinPadding: number;
   itemCornerRadius: number;
+  itemOpacity: number;
   maxSampleFillLinearGradientColorStops: (number | string)[];
   minSampleFillLinearGradientColorStops: (number | string)[];
 }
@@ -176,8 +176,9 @@ const configDefault: AudioTrackLaneConfig = {
     itemWidth: 5,
     itemMinPadding: 2,
     itemCornerRadius: 5,
-    maxSampleFillLinearGradientColorStops: fillLinearGradientAudioPeak,
-    minSampleFillLinearGradientColorStops: ColorUtil.inverseFillGradient(fillLinearGradientAudioPeak),
+    itemOpacity: 1,
+    maxSampleFillLinearGradientColorStops: [0, '#6FBE72', 0.5, '#7DC370', 0.78, '#A2D06C', 0.93, '#DEE666', 1, '#FFF263'],
+    minSampleFillLinearGradientColorStops: [0, '#6FBE72', 0.5, '#7DC370', 0.78, '#A2D06C', 0.93, '#DEE666', 1, '#FFF263'],
   },
 };
 
@@ -188,6 +189,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
   protected _timecodedEventCatcher?: Konva.Rect;
   protected _itemsGroup?: Konva.Group;
+  private _progressiveWaveformShape?: Konva.Shape;
   private _pendingCues: AudioVttCue[] | null = null;
   private _progressiveCueStore: ProgressiveAudioCueStore = {cues: [], cuesByBucket: new Map<number, AudioVttCue>(), cueKeys: new Set<string>()};
   private _pendingProgressiveVisibleCues: AudioVttCue[] = [];
@@ -197,13 +199,16 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   private _progressiveSession?: ProgressiveWaveformSession;
   private _progressiveBackfillRange?: ProgressiveRange;
   private _progressiveGenerationFrontier = 0;
+  private _progressiveLastRenderedWidth = 0;
   static readonly waveformChunkSeconds = AUDIO_WAVEFORM_CHUNK_SECONDS;
   static readonly progressiveWaveformChunkSeconds = AudioTrackLane.waveformChunkSeconds;
-  private static readonly progressiveWaveformRenderIntervalMs = 1000 / 8;
+  private static readonly progressiveWaveformRenderIntervalMs = 1000 / 3;
   private static readonly progressiveWaveformPendingLanes: Set<AudioTrackLane> = new Set<AudioTrackLane>();
   private static readonly progressiveWaveformPendingLayers: Set<Konva.Layer> = new Set<Konva.Layer>();
   private static progressiveWaveformRenderTimeoutId: number | null = null;
+  private static progressiveWaveformDrawTimeoutId: number | null = null;
   private static progressiveWaveformLastRenderAt = 0;
+  private static progressiveWaveformLastDrawAt = 0;
 
   constructor(config: TimelineLaneConfigDefaultsExcluded<AudioTrackLaneConfig>) {
     super(timelineLaneComposeConfig(configDefault, config));
@@ -229,6 +234,12 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       width: this._timecodedGroup.width(),
       height: this._config.style.height - (this._config.style.paddingTop + this._config.style.paddingBottom),
     });
+
+    if (this._config.progressiveSourceUrl && !this.vttUrl) {
+      this._progressiveMode = true;
+      this._progressiveWaveformShape = this.createProgressiveWaveformShape();
+      this._itemsGroup.add(this._progressiveWaveformShape);
+    }
 
     this._timecodedGroup.add(this._timecodedEventCatcher);
     this._timecodedGroup.add(this._itemsGroup);
@@ -275,7 +286,6 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     }
 
     if (this._config.progressiveSourceUrl && !this.vttUrl) {
-      this._progressiveMode = true;
       this._progressiveGenerationFrontier = 0;
       this.startProgressiveWaveform(this._videoController!.getCurrentTime());
       this._videoController!.onSeeked$.pipe(takeUntil(this._destroyed$)).subscribe({
@@ -310,6 +320,11 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
     [this._timecodedGroup, this._timecodedEventCatcher, this._itemsGroup].forEach((node) => {
       node!.width(timecodedRect.width);
+    });
+
+    this._progressiveWaveformShape?.setAttrs({
+      width: timecodedRect.width,
+      height: this._itemsGroup!.height(),
     });
 
     this._onSettleLayout$.next();
@@ -357,7 +372,145 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   private clearItems() {
     this._itemsMap.forEach((p) => p.destroy());
     this._itemsMap.clear();
+    this._progressiveWaveformShape?.destroy();
+    this._progressiveWaveformShape = undefined;
     this._itemsGroup!.destroyChildren();
+
+    if (this._progressiveMode && !this.vttUrl) {
+      this._progressiveWaveformShape = this.createProgressiveWaveformShape();
+      this._itemsGroup!.add(this._progressiveWaveformShape);
+    }
+  }
+
+  private createProgressiveWaveformShape() {
+    return KonvaFactory.createShape({
+      x: 0,
+      y: 0,
+      width: this._itemsGroup!.width(),
+      height: this._itemsGroup!.height(),
+      listening: false,
+      perfectDrawEnabled: false,
+      shadowForStrokeEnabled: false,
+      hitStrokeWidth: 0,
+      sceneFunc: (context, shape) => {
+        if (!this._timeline) {
+          return;
+        }
+
+        const cues = this.getProgressiveVisibleCues();
+        if (cues.length === 0) {
+          return;
+        }
+
+        const height = shape.height();
+        const barHalfHeight = height / 2;
+        const width = this.style.itemWidth;
+
+        for (const cue of cues) {
+          const x = this._timeline.timeToTimelinePosition(cue.startTime);
+          const maxSampleBarHeight = this.resolveProgressiveMaxSampleBarHeight(cue, height);
+          const minSampleBarHeight = this.resolveProgressiveMinSampleBarHeight(cue, height);
+
+          context.save();
+          context.translate(x, 0);
+          context.globalAlpha = this.style.itemOpacity;
+          context.fillStyle = this.createWaveformGradient(
+            context,
+            0,
+            0,
+            0,
+            height,
+            this.style.maxSampleFillLinearGradientColorStops
+          );
+          this.fillRoundedRect(context, 0, barHalfHeight - maxSampleBarHeight, width, maxSampleBarHeight, [this.style.itemCornerRadius, this.style.itemCornerRadius, 0, 0]);
+
+          context.fillStyle = this.createWaveformGradient(context, 0, 0, 0, height, this.style.minSampleFillLinearGradientColorStops);
+          this.fillRoundedRect(context, 0, barHalfHeight, width, minSampleBarHeight, [0, 0, this.style.itemCornerRadius, this.style.itemCornerRadius]);
+          context.restore();
+        }
+      },
+    });
+  }
+
+  private createWaveformGradient(
+    context: Konva.Context,
+    startX: number,
+    startY: number,
+    endX: number,
+    endY: number,
+    colorStops: (number | string)[]
+  ) {
+    const gradient = context.createLinearGradient(startX, startY, endX, endY);
+    for (let i = 0; i < colorStops.length; i += 2) {
+      gradient.addColorStop(Number(colorStops[i]), String(colorStops[i + 1]));
+    }
+    return gradient;
+  }
+
+  private resolveProgressiveMaxSampleBarHeight(cue: AudioVttCue, height: number) {
+    return new Decimal(cue.maxSample)
+      .mul(height / 2)
+      .toDecimalPlaces(2)
+      .toNumber();
+  }
+
+  private resolveProgressiveMinSampleBarHeight(cue: AudioVttCue, height: number) {
+    return new Decimal(cue.minSample)
+      .abs()
+      .mul(height / 2)
+      .toDecimalPlaces(2)
+      .toNumber();
+  }
+
+  private fillRoundedRect(context: Konva.Context, x: number, y: number, width: number, height: number, cornerRadius: [number, number, number, number]) {
+    if (width <= 0 || height <= 0) {
+      return;
+    }
+
+    const [topLeft, topRight, bottomRight, bottomLeft] = cornerRadius.map((radius) => Math.max(0, Math.min(radius, width / 2, height / 2))) as [number, number, number, number];
+
+    context.beginPath();
+    context.moveTo(x + topLeft, y);
+    context.lineTo(x + width - topRight, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + topRight);
+    context.lineTo(x + width, y + height - bottomRight);
+    context.quadraticCurveTo(x + width, y + height, x + width - bottomRight, y + height);
+    context.lineTo(x + bottomLeft, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - bottomLeft);
+    context.lineTo(x, y + topLeft);
+    context.quadraticCurveTo(x, y, x + topLeft, y);
+    context.closePath();
+    context.fill();
+  }
+
+  private redrawProgressiveWaveform() {
+    if (!this._progressiveWaveformShape) {
+      this._progressiveWaveformShape = this.createProgressiveWaveformShape();
+      this._itemsGroup?.add(this._progressiveWaveformShape);
+    }
+
+    const layer = this._progressiveWaveformShape?.getLayer();
+    if (!layer) {
+      return;
+    }
+
+    AudioTrackLane.progressiveWaveformPendingLayers.add(layer);
+    if (AudioTrackLane.progressiveWaveformDrawTimeoutId !== null) {
+      return;
+    }
+
+    const now = performance.now();
+    const delay = Math.max(0, AudioTrackLane.progressiveWaveformRenderIntervalMs - (now - AudioTrackLane.progressiveWaveformLastDrawAt));
+
+    AudioTrackLane.progressiveWaveformDrawTimeoutId = window.setTimeout(() => {
+      AudioTrackLane.progressiveWaveformDrawTimeoutId = null;
+
+      const layersToDraw = [...AudioTrackLane.progressiveWaveformPendingLayers];
+      AudioTrackLane.progressiveWaveformPendingLayers.clear();
+      AudioTrackLane.progressiveWaveformLastDrawAt = performance.now();
+
+      layersToDraw.forEach((drawLayer) => drawLayer.drawScene());
+    }, delay);
   }
 
   private getVisibleCuesForInterpolation(): AudioVttCue[] {
@@ -392,14 +545,15 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
         x: this._timeline.timeToTimelinePosition(cue.startTime),
         width: this.style.itemWidth,
         audioVttCue: cue,
-        style: {
-          cornerRadius: this.style.itemCornerRadius,
-          height: this._itemsGroup.height(),
-          visible: true,
-          maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
-          minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
-        },
-      });
+          style: {
+            cornerRadius: this.style.itemCornerRadius,
+            opacity: this.style.itemOpacity,
+            height: this._itemsGroup.height(),
+            visible: true,
+            maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
+            minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
+          },
+        });
 
       this._itemsMap.set(i, audioTrackLaneItem);
       this._itemsGroup.add(audioTrackLaneItem.konvaNode);
@@ -414,10 +568,13 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
     const visibleTimeRange = this._timeline.getVisibleTimeRange();
     const cadenceSeconds = AudioTrackLane.progressiveWaveformChunkSeconds;
-    const visibleBucketKeys = getWaveformBucketKeysInRange(visibleTimeRange.start, visibleTimeRange.end, cadenceSeconds);
+    const bufferedStartTime = Math.max(0, visibleTimeRange.start - PROGRESSIVE_WAVEFORM_RENDER_BUFFER_BUCKETS * cadenceSeconds);
+    const bufferedEndTime = visibleTimeRange.end + PROGRESSIVE_WAVEFORM_RENDER_BUFFER_BUCKETS * cadenceSeconds;
+    const visibleBucketKeys = getWaveformBucketKeysInRange(bufferedStartTime, bufferedEndTime, cadenceSeconds);
     const visibleCues: AudioVttCue[] = [];
 
-    for (const bucketKey of visibleBucketKeys) {
+    for (let i = 0; i < visibleBucketKeys.length; i += 1) {
+      const bucketKey = visibleBucketKeys[i];
       const cue = this._progressiveCueStore.cuesByBucket.get(bucketKey);
       if (cue) {
         visibleCues.push(cue);
@@ -428,16 +585,22 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   }
 
   private appendProgressiveCue(cue: AudioVttCue) {
-    if (!this._timeline || !this._itemsGroup) return;
+    if (!this._timeline || !this._itemsGroup) return false;
 
-    const visibleTimeRange = this._timeline.getVisibleTimeRange();
     this._progressiveCueStore.cues.push(cue);
     this._progressiveCueStore.cuesByBucket.set(toWaveformBucketKey(cue.startTime), cue);
-    if (cue.endTime < visibleTimeRange.start || cue.startTime > visibleTimeRange.end) {
-      return;
+
+    if (this._progressiveMode && !this.vttUrl) {
+      const visibleTimeRange = this._timeline.getVisibleTimeRange();
+      return cue.endTime >= visibleTimeRange.start && cue.startTime <= visibleTimeRange.end;
     }
-    this._pendingProgressiveVisibleCues.push(cue);
-    this.scheduleProgressiveDraw();
+
+    const visibleTimeRange = this._timeline.getVisibleTimeRange();
+    if (cue.endTime < visibleTimeRange.start || cue.startTime > visibleTimeRange.end) {
+      return false;
+    }
+
+    return true;
   }
 
   private scheduleProgressiveDraw() {
@@ -446,10 +609,6 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     }
 
     AudioTrackLane.progressiveWaveformPendingLanes.add(this);
-    const layer = this._itemsGroup?.getLayer();
-    if (layer) {
-      AudioTrackLane.progressiveWaveformPendingLayers.add(layer);
-    }
 
     if (AudioTrackLane.progressiveWaveformRenderTimeoutId !== null) {
       return;
@@ -461,51 +620,54 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     AudioTrackLane.progressiveWaveformRenderTimeoutId = window.setTimeout(() => {
       AudioTrackLane.progressiveWaveformRenderTimeoutId = null;
 
-      const layersToRender = [...AudioTrackLane.progressiveWaveformPendingLayers];
       const lanesToRender = [...AudioTrackLane.progressiveWaveformPendingLanes];
       AudioTrackLane.progressiveWaveformPendingLanes.clear();
-      AudioTrackLane.progressiveWaveformPendingLayers.clear();
-
-      if (layersToRender.length === 0) {
-        return;
-      }
 
       AudioTrackLane.progressiveWaveformLastRenderAt = performance.now();
-      lanesToRender.forEach((lane) => lane.flushPendingProgressiveCues());
-      layersToRender.forEach((drawLayer) => drawLayer.batchDraw());
+      lanesToRender.forEach((lane) => {
+        lane.flushPendingProgressiveCues();
+      });
     }, delay);
   }
 
-  private flushPendingProgressiveCues() {
-    if (!this._timeline || !this._itemsGroup || this._pendingProgressiveVisibleCues.length === 0) {
-      this._pendingProgressiveVisibleCues = [];
-      return;
+  private flushPendingProgressiveCues(): boolean {
+    if (!this._timeline || !this._itemsGroup) {
+      return false;
     }
+
+    if (this._progressiveMode && !this.vttUrl) {
+      this.redrawProgressiveWaveform();
+      return true;
+    }
+
+    let didMutate = false;
 
     for (const cue of this._pendingProgressiveVisibleCues) {
       if (this._itemsMap.has(cue.index)) {
-        continue;
-      }
+      continue;
+    }
 
       const audioTrackLaneItem = new AudioTrackLaneItem({
         x: this._timeline.timeToTimelinePosition(cue.startTime),
         width: this.style.itemWidth,
         audioVttCue: cue,
-        style: {
-          cornerRadius: this.style.itemCornerRadius,
-          height: this._itemsGroup.height(),
-          visible: true,
-          maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
-          minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
-        },
-      });
+          style: {
+            cornerRadius: this.style.itemCornerRadius,
+            opacity: this.style.itemOpacity,
+            height: this._itemsGroup.height(),
+            visible: true,
+            maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
+            minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
+          },
+        });
 
       this._itemsMap.set(cue.index, audioTrackLaneItem);
       this._itemsGroup.add(audioTrackLaneItem.konvaNode);
+      didMutate = true;
     }
 
     this._pendingProgressiveVisibleCues = [];
-    this._itemsGroup.getLayer()?.batchDraw();
+    return didMutate;
   }
 
   private renderProgressiveVisibleCues() {
@@ -513,15 +675,40 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       return 0;
     }
 
+    if (this._progressiveMode && !this.vttUrl) {
+      const currentWidth = this._timeline.getTimecodedFloatingDimension().width;
+      if (currentWidth !== this._progressiveLastRenderedWidth) {
+        this._progressiveLastRenderedWidth = currentWidth;
+        this._progressiveWaveformShape?.width(currentWidth);
+      }
+
+      this.redrawProgressiveWaveform();
+      return this.getProgressiveVisibleCues().length;
+    }
+
     const visibleCues = this.getProgressiveVisibleCues();
     const visibleCueIndexes = new Set<number>();
+    let didMutate = false;
+    const currentWidth = this._timeline.getTimecodedFloatingDimension().width;
+    const shouldReposition = currentWidth !== this._progressiveLastRenderedWidth;
+
+    if (shouldReposition) {
+      this._progressiveLastRenderedWidth = currentWidth;
+    }
 
     for (const cue of visibleCues) {
       visibleCueIndexes.add(cue.index);
 
       const existingItem = this._itemsMap.get(cue.index);
       if (existingItem) {
-        existingItem.setPosition({x: this._timeline.timeToTimelinePosition(cue.startTime)});
+        if (!existingItem.konvaNode.visible()) {
+          existingItem.konvaNode.visible(true);
+          didMutate = true;
+        }
+
+        if (shouldReposition) {
+          existingItem.setPosition({x: this._timeline.timeToTimelinePosition(cue.startTime)});
+        }
         continue;
       }
 
@@ -529,27 +716,33 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
         x: this._timeline.timeToTimelinePosition(cue.startTime),
         width: this.style.itemWidth,
         audioVttCue: cue,
-        style: {
-          cornerRadius: this.style.itemCornerRadius,
-          height: this._itemsGroup.height(),
-          visible: true,
-          maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
-          minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
-        },
-      });
+          style: {
+            cornerRadius: this.style.itemCornerRadius,
+            opacity: this.style.itemOpacity,
+            height: this._itemsGroup.height(),
+            visible: true,
+            maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
+            minSampleFillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
+          },
+        });
 
       this._itemsMap.set(cue.index, audioTrackLaneItem);
       this._itemsGroup.add(audioTrackLaneItem.konvaNode);
+      didMutate = true;
     }
 
     for (const [cueIndex, item] of [...this._itemsMap.entries()]) {
       if (!visibleCueIndexes.has(cueIndex)) {
-        item.destroy();
-        this._itemsMap.delete(cueIndex);
+        if (item.konvaNode.visible()) {
+          item.konvaNode.visible(false);
+          didMutate = true;
+        }
       }
     }
 
-    this._itemsGroup.getLayer()?.batchDraw();
+    if (didMutate) {
+      this._itemsGroup.getLayer()?.batchDraw();
+    }
     return this._itemsMap.size;
   }
 
@@ -604,6 +797,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
           audioVttCue: cue,
           style: {
             cornerRadius: this.style.itemCornerRadius,
+            opacity: this.style.itemOpacity,
             height: this._itemsGroup!.height(),
             visible: true,
             maxSampleFillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
@@ -699,7 +893,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     }
 
     if (this._progressiveMode && !this.vttUrl) {
-      this.renderProgressiveVisibleCues();
+      this.redrawProgressiveWaveform();
       return;
     }
 
@@ -716,12 +910,9 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     }
 
     if (this._progressiveMode && !this.vttUrl) {
-      if (this._itemsMap.size > 0) {
-        for (const [cueIndex, item] of [...this._itemsMap.entries()]) {
-          const cue = item.getAudioVttCue();
-          const x = this._timeline!.timeToTimelinePosition(cue.startTime);
-          item.setPosition({x});
-        }
+      const currentWidth = this._timeline!.getTimecodedFloatingDimension().width;
+      if (currentWidth !== this._progressiveLastRenderedWidth) {
+        this._progressiveLastRenderedWidth = currentWidth;
       }
 
       this.renderProgressiveVisibleCues();
@@ -738,10 +929,6 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
         let x = this._timeline!.timeToTimelinePosition(cue.startTime);
         item.setPosition({x});
       }
-    }
-
-    if (this._progressiveMode && !this.vttUrl) {
-      this.renderProgressiveVisibleCues();
     }
 
   }
@@ -776,7 +963,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
       this._progressiveSession.cursorTimestamp = normalizedStartTimestamp;
       this._progressiveDemandResolver?.();
       this._progressiveDemandResolver = undefined;
-      this.renderProgressiveVisibleCues();
+      this.flushPendingProgressiveCues();
       return;
     }
 
@@ -888,6 +1075,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
         }
 
         const chunkEndTimestamp = Math.min(this._progressiveRequestedEndTimestamp, session.cursorTimestamp + AudioTrackLane.progressiveWaveformChunkSeconds);
+        let didAppendVisibleCue = false;
 
         for await (const wrappedBuffer of audioBufferSink.buffers(session.cursorTimestamp, chunkEndTimestamp)) {
           if (session.abortController.signal.aborted) {
@@ -915,9 +1103,9 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
                 text: '',
                 minSample: chunk.peaks.minSample,
                 maxSample: chunk.peaks.maxSample,
-              };
-              this.appendProgressiveCue(cue);
-            }
+                };
+                didAppendVisibleCue = this.appendProgressiveCue(cue) || didAppendVisibleCue;
+              }
 
             chunksSinceYield += 1;
             const now = performance.now();
@@ -932,11 +1120,15 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
           this._progressiveGenerationFrontier = Math.max(this._progressiveGenerationFrontier, session.cursorTimestamp);
         }
 
+        if (didAppendVisibleCue) {
+          this.scheduleProgressiveDraw();
+        }
+
       }
 
     } finally {
       input.dispose();
-      this.renderProgressiveVisibleCues();
+      this.flushPendingProgressiveCues();
     }
   }
 
@@ -947,6 +1139,16 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
     this._progressiveCueStore = {cues: [], cuesByBucket: new Map<number, AudioVttCue>(), cueKeys: new Set<string>()};
     this._progressiveBackfillRange = undefined;
     this._progressiveGenerationFrontier = 0;
+    this._progressiveLastRenderedWidth = 0;
+
+    if (AudioTrackLane.progressiveWaveformDrawTimeoutId !== null) {
+      window.clearTimeout(AudioTrackLane.progressiveWaveformDrawTimeoutId);
+      AudioTrackLane.progressiveWaveformDrawTimeoutId = null;
+    }
+    AudioTrackLane.progressiveWaveformPendingLayers.clear();
+
+    this._progressiveWaveformShape?.destroy();
+    this._progressiveWaveformShape = undefined;
 
     if (this._progressiveSession) {
       this._progressiveSession.abortController.abort();

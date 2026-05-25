@@ -19,8 +19,6 @@ import Konva from 'konva';
 import {Dimension, HasRectMeasurement, Position, RectMeasurement} from '../../common';
 import {AudioVttCue, WithOptionalPartial} from '../../types';
 import Decimal from 'decimal.js';
-import {fillLinearGradientAudioPeak} from '../../constants';
-import {ColorUtil} from '../../util/color-util';
 import {nullifier} from '../../util/destroy-util';
 import {KonvaFactory} from '../../konva/konva-factory';
 
@@ -48,8 +46,8 @@ const configDefault: Omit<AudioTrackLaneItemConfig, 'audioVttCue' | 'x' | 'width
     cornerRadius: 20,
     opacity: 1,
     visible: true,
-    maxSampleFillLinearGradientColorStops: fillLinearGradientAudioPeak,
-    minSampleFillLinearGradientColorStops: ColorUtil.inverseFillGradient(fillLinearGradientAudioPeak),
+    maxSampleFillLinearGradientColorStops: [0, '#6FBE72', 0.5, '#7DC370', 0.78, '#A2D06C', 0.93, '#DEE666', 1, '#FFF263'],
+    minSampleFillLinearGradientColorStops: [0, '#6FBE72', 0.5, '#7DC370', 0.78, '#A2D06C', 0.93, '#DEE666', 1, '#FFF263'],
   },
 };
 
@@ -81,9 +79,9 @@ export class AudioTrackLaneItem extends BaseKonvaComponent<AudioTrackLaneItemCon
       listening: this.config.listening,
     });
 
-    let barMaxHeight = this.style.height / 2;
-    let maxSampleBarHeight = this.resolveMaxSampleBarHeight();
-    let minSampleBarHeight = this.resolveMinSampleBarHeight();
+    const barMaxHeight = this.style.height / 2;
+    const maxSampleBarHeight = this.resolveMaxSampleBarHeight();
+    const minSampleBarHeight = this.resolveMinSampleBarHeight();
 
     this._maxSampleBar = KonvaFactory.createRect({
       x: 0,
@@ -92,8 +90,8 @@ export class AudioTrackLaneItem extends BaseKonvaComponent<AudioTrackLaneItemCon
       height: maxSampleBarHeight,
       opacity: this.style.opacity,
       cornerRadius: [this.style.cornerRadius, this.style.cornerRadius, 0, 0],
-      fillLinearGradientStartPoint: {x: 0, y: -(barMaxHeight - maxSampleBarHeight)},
-      fillLinearGradientEndPoint: {x: 0, y: maxSampleBarHeight},
+      fillLinearGradientStartPoint: {x: 0, y: 0},
+      fillLinearGradientEndPoint: {x: 0, y: this.style.height},
       fillLinearGradientColorStops: this.style.maxSampleFillLinearGradientColorStops,
       perfectDrawEnabled: false,
       shadowForStrokeEnabled: false,
@@ -108,7 +106,7 @@ export class AudioTrackLaneItem extends BaseKonvaComponent<AudioTrackLaneItemCon
       opacity: this.style.opacity,
       cornerRadius: [0, 0, this.style.cornerRadius, this.style.cornerRadius],
       fillLinearGradientStartPoint: {x: 0, y: 0},
-      fillLinearGradientEndPoint: {x: 0, y: barMaxHeight},
+      fillLinearGradientEndPoint: {x: 0, y: this.style.height},
       fillLinearGradientColorStops: this.style.minSampleFillLinearGradientColorStops,
       perfectDrawEnabled: false,
       shadowForStrokeEnabled: false,

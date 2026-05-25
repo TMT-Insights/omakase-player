@@ -44,6 +44,14 @@ export class KonvaFactory {
     return new Konva.Line(config);
   }
 
+  static createShape(config?: Konva.ShapeConfig): Konva.Shape {
+    return new Konva.Shape(config);
+  }
+
+  static createImage(config: Konva.ImageConfig): Konva.Image {
+    return new Konva.Image(config);
+  }
+
   static createEventCatcherRect(config: Konva.RectConfig = {}) {
     return KonvaFactory.createRect({
       opacity: 0,
