@@ -303,7 +303,9 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
 
   override onMeasurementsChange() {
     super.onMeasurementsChange();
-    this.renderPendingCues();
+    if (this._pendingCues) {
+      this.renderPendingCues();
+    }
   }
 
   protected settleLayout() {
