@@ -903,7 +903,7 @@ export class AudioTrackLane extends VttTimelineLane<AudioTrackLaneConfig, AudioT
   }
 
   private resolveInterpolatedItemPosition(itemIndex: number, itemPadding: number) {
-    return itemIndex * this.style.itemWidth + itemIndex * itemPadding;
+    return Math.abs(this._timeline!.getTimecodedFloatingHorizontals().x) + itemIndex * this.style.itemWidth + itemIndex * itemPadding;
   }
 
   private settlePosition() {
