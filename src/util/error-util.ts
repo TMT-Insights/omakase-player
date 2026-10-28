@@ -15,14 +15,13 @@
  */
 
 import {ZodError} from 'zod';
-import {ParseParams} from 'zod/lib/helpers/parseUtil';
 
 export function parseErrorMessage(error: unknown): string {
   let message;
   if (typeof error === 'string') {
     message = error;
   } else if (error instanceof ZodError) {
-    message = (error as ZodError).errors.map((p) => p.message).join('. ');
+    message = (error as ZodError).issues.map((p) => p.message).join('. ');
   } else if (error instanceof Error) {
     message = error.message;
   } else {
@@ -32,10 +31,8 @@ export function parseErrorMessage(error: unknown): string {
   return message;
 }
 
-export function zodErrorMapOverload(message: string): Partial<ParseParams> {
+export function zodErrorMapOverload(message: string) {
   return {
-    errorMap: (issue, ctx) => {
-      return {message};
-    },
+    error: () => message,
   };
 }
