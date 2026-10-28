@@ -25,6 +25,7 @@
         "int": "tsc --noEmit && vite build --debug",
         "prod": "tsc --noEmit && vite build --debug",
         "check": "tsc --noEmit",
+        "test": "node --test tests/*.test.mjs",
         "format": "prettier . --write",
         "dev:tsc": "rm -rf dist/lib && tsc --watch",
         "build:style": "vite build --config vite.style.config.mjs",
@@ -52,7 +53,7 @@
         "postinstall-postinstall": "^2.1.0",
         "prettier": "^3.3.3",
         "sass": "^1.59.2",
-        "typescript": "^4.9.5",
+        "typescript": "^5.9.3",
         "vite": "^7.3.1",
         "vite-plugin-dts": "^5.1.2"
     },

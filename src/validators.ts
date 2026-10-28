@@ -39,7 +39,7 @@ export class Validators {
 
   public static url(): (value: string) => string {
     return (value: string) => {
-      return z.coerce.string().url().parse(value);
+      return z.coerce.string().pipe(z.url()).parse(value);
     };
   }
 
