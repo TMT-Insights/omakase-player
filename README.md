@@ -1,5 +1,20 @@
 # Omakase Player
 
+## Building from source
+
+Use Node.js 24 LTS (selected by `.nvmrc`) to run the Vite 7 build tooling:
+
+```bash
+nvm install
+nvm use
+npm ci
+npm audit
+npm test
+npm run build:prod
+```
+
+The production build compiles the player chroming stylesheet, type-checks the source, and writes the library bundles and TypeScript declarations to `dist/`.
+
 ## Prerequisites
 
 Omakase Player can be loaded as UMD module inside HTML page. If loaded as UMD module it requires hls.js loaded before Omakase Player:
@@ -1287,4 +1302,3 @@ omakasePlayer.loadVideo('https://my-server.com/myvideo.m3u8', {
   frameRate: 25
 })
 ```
-
