@@ -50,6 +50,12 @@ install the resulting archive in the consuming project. The package's `types`
 entry points to `dist/index.d.ts`; keep that declaration entry and its referenced
 declarations in the archive alongside `dist/omakase-player.es.js`.
 
+The build bundles browser polyfills for `events`, `stream`, and `util`, including
+the `EventEmitter` used by the subtitle converter. These must be resolved while
+building the player; consumer aliases cannot repair an already-bundled empty
+Node module stub. Run `npm run test:bundle` after building to smoke-test the
+generated module in a DOM environment before packing it.
+
 Optionally, you can include default Omakase Player CSS stylesheet or import and use `omakase-player.scss` SCSS stylesheet.
 
 ```html

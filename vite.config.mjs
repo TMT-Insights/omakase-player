@@ -22,6 +22,7 @@ import {styleUpdatePlugin} from './vite.chroming-style.config.mjs';
 export default defineConfig({
   resolve: {
     alias: [
+      {find: /^(node:)?events$/, replacement: 'events/'},
       {find: /^node:stream$/, replacement: 'stream-browserify'},
       {find: /^stream$/, replacement: 'stream-browserify'},
       {find: /^node:util$/, replacement: 'util/'},
