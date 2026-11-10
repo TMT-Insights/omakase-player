@@ -283,7 +283,7 @@ export class OmakaseTrackSelector extends OmakaseDropdownSelector {
    */
   private isMainRouterSupported(player: PlayerApi | PlayerDetachedApi): boolean {
     this.updateMainMediaType(player);
-    return !(BrowserProvider.instance.isSafari && this._mainMediaType === MainMediaType.HLS);
+    return !(BrowserProvider.instance.isSafari && (this._mainMediaType === MainMediaType.HLS || this._mainMediaType === MainMediaType.DASH));
   }
 
   private updateMainMediaType(player: PlayerApi | PlayerDetachedApi): void {

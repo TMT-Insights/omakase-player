@@ -21,6 +21,7 @@
     ],
     "scripts": {
         "dev": "vite",
+        "dev:dash": "vite --host 127.0.0.1 --port 5173 --strictPort --open /demo/dash.html",
         "build": "vite build",
         "build:workers": "vite build --config vite.workers.config.mjs",
         "start": "node dist/index.js",

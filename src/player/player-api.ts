@@ -135,6 +135,8 @@ export interface PlayerApi extends PlayerCommonApi {
   /** @ignore */
   getPlaybackEngine(mainMediaType: MainMediaType.HLS): PlayerPlaybackEngineMapping[MainMediaType.HLS];
   /** @ignore */
+  getPlaybackEngine(mainMediaType: MainMediaType.DASH): PlayerPlaybackEngineMapping[MainMediaType.DASH];
+  /** @ignore */
   getPlaybackEngine(mainMediaType: MainMediaType.MP4): PlayerPlaybackEngineMapping[MainMediaType.MP4];
   /** @ignore */
   getPlaybackEngine(mainMediaType: MainMediaType.AUDIO_FILE): PlayerPlaybackEngineMapping[MainMediaType.AUDIO_FILE];
@@ -168,6 +170,7 @@ export interface PlayerLocalApi extends PlayerInternalApi, Destroyable {
   clearPlayerSession(): void;
 
   getPlaybackEngine(mainMediaType: MainMediaType.HLS): PlayerPlaybackEngineMapping[MainMediaType.HLS];
+  getPlaybackEngine(mainMediaType: MainMediaType.DASH): PlayerPlaybackEngineMapping[MainMediaType.DASH];
   getPlaybackEngine(mainMediaType: MainMediaType.MP4): PlayerPlaybackEngineMapping[MainMediaType.MP4];
   getPlaybackEngine(mainMediaType: MainMediaType.AUDIO_FILE): PlayerPlaybackEngineMapping[MainMediaType.AUDIO_FILE];
   getPlaybackEngine(mainMediaType: MainMediaType.SLATE): PlayerPlaybackEngineMapping[MainMediaType.SLATE];
@@ -220,6 +223,7 @@ export interface PlayerInternalApi extends PlayerCommonApi {
  */
 export type PlayerControllerConfigMap = {
   [MainMediaType.HLS]: HlsPlayerControllerConfig;
+  [MainMediaType.DASH]: HlsPlayerControllerConfig;
   [MainMediaType.MP4]: Mp4PlayerControllerConfig;
   [MainMediaType.AUDIO_FILE]: AudioFilePlayerControllerConfig;
   // TAMS reuses the HLS controller config (it bridges to HLS)

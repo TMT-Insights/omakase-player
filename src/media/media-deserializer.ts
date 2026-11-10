@@ -36,6 +36,7 @@ import type {MediaContainerTrackArgs, MediaContainerTrackState} from './media-co
 import {OpStage, type OpStageState} from '../common/op-stage';
 import type {TimedItemsTrackArgs, TimedItemsTrackState} from './timed-items-track';
 import type {Destroyable} from '../common/capabilities';
+import {DashMainMedia} from '../dash/dash-main-media';
 
 export class MediaDeserializer implements Destroyable {
   constructor() {}
@@ -44,6 +45,8 @@ export class MediaDeserializer implements Destroyable {
     switch (state.mainMediaType) {
       case MainMediaType.HLS:
         return this.createHlsMainMedia(state);
+      case MainMediaType.DASH:
+        return new DashMainMedia({...this.createBaseMainMediaArgs(state), sourceFileFormatType: state.sourceFileFormatType});
       case MainMediaType.MP4:
         return this.createMp4MainMedia(state);
       case MainMediaType.AUDIO_FILE:

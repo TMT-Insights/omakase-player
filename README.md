@@ -80,6 +80,38 @@ omakasePlayer.loadMainMedia('https://my-server.com/myvideo.m3u8').subscribe({
 });
 ```
 
+### MPEG-DASH (VOD)
+
+Run the local sample from the repository root:
+
+```bash
+npm ci
+npm run dev:dash
+```
+
+Open http://localhost:5173/demo/dash.html. The sample imports the local source and automatically loads a video-only manifest referencing two renditions of the public Envivio DASH stream; press Play once ready. This also works in browsers without AAC support. Paste another MPD URL and click **Load stream**, or pass it as the URL-encoded `url` query parameter. For audio/video playback in an AAC-capable browser, use `https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd`.
+
+Static MPEG-DASH MPDs are bridged to HLS playlists and played by the existing hls.js engine, without transcoding or adding dash.js. `.mpd` URLs are detected automatically; for URLs without an extension, specify the media type:
+
+```javascript
+import {MainMediaType} from '@omakase-player';
+
+omakasePlayer.loadMainMedia('https://my-server.com/manifest.mpd', {
+  mainMediaType: MainMediaType.DASH,
+}).subscribe({
+  next: (mainMedia) => console.log(mainMedia.duration),
+  error: (error) => console.error(error),
+});
+```
+
+Supported: a single static Period starting at zero, fragmented MP4 video/audio, inherited `BaseURL` and `SegmentTemplate`, duration or `SegmentTimeline` addressing (including repeats), and `$RepresentationID$`, `$Bandwidth$`, `$Number$`, and `$Time$` URL templates. Video representations must have aligned segment boundaries. Alternate audio AdaptationSets become selectable HLS audio tracks; the highest-bandwidth representation is used within each audio AdaptationSet. Playback requires browser codec support and CORS access to the MPD, initialization segments, and media segments.
+
+Live/dynamic MPDs, multiple Periods or video AdaptationSets, DRM, embedded subtitles, `SegmentBase`/SIDX, `SegmentList`, multiple `BaseURL` alternatives, XLink, and timeline gaps/overlaps or leading trims are rejected with an explicit load error. A finite MPD or Period duration is required. All tracks must share the same presentation-time origin; their first segment must start at their `presentationTimeOffset`. Alternate audio tracks must use the same codec.
+
+DASH uses `playerControllerConfig[MainMediaType.DASH].hlsConfig` on `OmakasePlayer` (`controllerConfig` on `Player`) and `player.getPlaybackEngine(MainMediaType.DASH)` for HLS engine configuration/access. Authentication uses the existing `AuthConfig`; session state retains the original MPD URL and regenerates local playlists when reloaded or detached.
+
+### Player Chroming
+
 Player chroming can be configured with the `chromingTheme`, `chromingThemeConfig`, `chromingWatermark`, `chromingWatermarkVisibility`, `chromingFullscreenChroming`, and `chromingStyleUrl` properties. These allow selection of a chroming theme, watermark, and other theme-specific configuration. Some code examples are shown below:
 
 ```javascript

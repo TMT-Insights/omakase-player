@@ -24,6 +24,7 @@ import type {FrameImagePlayerPlaybackEngine} from '../frame-image';
 
 export type PlayerPlaybackEngineMapping = {
   [MainMediaType.HLS]: HlsPlayerPlaybackEngine;
+  [MainMediaType.DASH]: HlsPlayerPlaybackEngine;
   [MainMediaType.MP4]: Mp4PlayerPlaybackEngine;
   [MainMediaType.AUDIO_FILE]: AudioFilePlayerPlaybackEngine;
   [MainMediaType.TAMS]: HlsPlayerPlaybackEngine;

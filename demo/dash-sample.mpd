@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" mediaPresentationDuration="PT193.68S" minBufferTime="PT2S">
+  <BaseURL>https://dash.akamaized.net/envivio/EnvivioDash3/</BaseURL>
+  <Period start="PT0S">
+    <AdaptationSet mimeType="video/mp4" codecs="avc1.4D401E" frameRate="30000/1001" segmentAlignment="true">
+      <SegmentTemplate timescale="90000" duration="179704" startNumber="1" initialization="$RepresentationID$-Header.m4s" media="$RepresentationID$-270146-i-$Number$.m4s" />
+      <Representation id="v4_257" bandwidth="200000" width="320" height="180" />
+      <Representation id="v1_257" bandwidth="1200000" width="768" height="432" />
+    </AdaptationSet>
+  </Period>
+</MPD>

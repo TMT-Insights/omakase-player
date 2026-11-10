@@ -50,6 +50,7 @@ import {FileFormat, FileFormatType} from '../common';
 import type {TrackLoadOptions} from '../track';
 import {FrameImageMainMedia, FrameImageTrack, TrickTrack} from '../frame-image';
 import {checkSidecarVideoTrackTypeEnabled} from './media-container-track';
+import {DashMainMedia} from '../dash/dash-main-media';
 
 export class MediaFactory {
   protected static get _tools(): OmakaseToolsApi {
@@ -58,6 +59,7 @@ export class MediaFactory {
 
   private static readonly MAIN_MEDIA_TYPE_FORMATS: Record<MainMediaType, readonly FileFormatType[]> = {
     [MainMediaType.HLS]: [FileFormatType.HLS],
+    [MainMediaType.DASH]: [FileFormatType.DASH],
     [MainMediaType.MP4]: [FileFormatType.MP4, FileFormatType.MOV],
     [MainMediaType.AUDIO_FILE]: [...FileFormat.AUDIO.map((p) => p.type)],
     // TAMS is bridged to HLS internally
@@ -89,6 +91,8 @@ export class MediaFactory {
         switch (mainMediaType) {
           case MainMediaType.HLS:
             return new HlsMainMedia({source: urlSource, sourceFileFormatType, loadOptions});
+          case MainMediaType.DASH:
+            return new DashMainMedia({source: urlSource, sourceFileFormatType, loadOptions});
           case MainMediaType.MP4:
             return new Mp4MainMedia({
               source: urlSource,
@@ -150,6 +154,10 @@ export class MediaFactory {
     // Validate fileFormat against mainMediaType if both are known
     if (fileFormat && mainMediaType && !this.MAIN_MEDIA_TYPE_FORMATS[mainMediaType].includes(fileFormat.type)) {
       throw new Error(`fileFormatType ${fileFormatType} is not compatible with mainMediaType ${mainMediaType}`);
+    }
+
+    if (mainMediaType === MainMediaType.DASH) {
+      return of({mainMediaType, fileFormat: FileFormat.DASH});
     }
 
     // fileFormat known — derive mainMediaType if needed, no probe required

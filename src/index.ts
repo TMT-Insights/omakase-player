@@ -39,6 +39,7 @@ export * from './ui';
 export * from './omp-provider';
 export * from './vu-meter';
 export * from './tams';
+export * from './dash';
 export * from './virtual';
 export * from './slate';
 export * from './video';

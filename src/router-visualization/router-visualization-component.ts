@@ -47,7 +47,8 @@ export class RouterVisualizationComponent extends RouterVisualizationBase {
     }
     this._mainTrack = this.prepareTrackForVisualization(config.track);
 
-    const isSafariAndHls = this._omakasePlayer!.player.mainMedia?.mainMediaType === MainMediaType.HLS && BrowserProvider.instance.isSafari;
+    const mainMediaType = this._omakasePlayer!.player.mainMedia?.mainMediaType;
+    const isSafariAndHls = (mainMediaType === MainMediaType.HLS || mainMediaType === MainMediaType.DASH) && BrowserProvider.instance.isSafari;
     if (!isSafariAndHls) {
       if (applyDefaultMatrix) {
         this.applyMainTrackDefaultMatrix(config);

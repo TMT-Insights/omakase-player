@@ -30,6 +30,7 @@ import {type FileFormatType} from '../common';
  */
 export enum MainMediaType {
   HLS = 'HLS',
+  DASH = 'DASH',
   MP4 = 'MP4',
   AUDIO_FILE = 'AUDIO_FILE',
   TAMS = 'TAMS',
@@ -163,7 +164,7 @@ export interface MainMedia extends MediaEntity {
   /** Observable stream of lifecycle events (loading, loaded, error, updated). */
   onEvent$: Observable<MainMediaEvent>;
 
-  /** The format of the media source (HLS, MP4, or AUDIO_FILE). */
+  /** The format of the main media source, including HLS and DASH streams. */
   mainMediaType: MainMediaType;
 
   /** Serializable state snapshot. */
@@ -304,6 +305,8 @@ export interface BaseMainMediaLoadOptions extends Serializable {
 
 export interface HlsMainMediaLoadOptions extends BaseMainMediaLoadOptions {}
 
+export interface DashMainMediaLoadOptions extends BaseMainMediaLoadOptions {}
+
 export interface Mp4MainMediaLoadOptions extends BaseMainMediaLoadOptions {}
 
 export interface AudioFileMainMediaLoadOptions extends BaseMainMediaLoadOptions {}
@@ -357,6 +360,7 @@ export interface SlateMainMediaLoadOptions extends BaseMainMediaLoadOptions {}
 
 export type MainMediaLoadOptionsMap = {
   [MainMediaType.HLS]: HlsMainMediaLoadOptions;
+  [MainMediaType.DASH]: DashMainMediaLoadOptions;
   [MainMediaType.MP4]: Mp4MainMediaLoadOptions;
   [MainMediaType.AUDIO_FILE]: AudioFileMainMediaLoadOptions;
   [MainMediaType.TAMS]: TamsMainMediaLoadOptions;
