@@ -45,6 +45,11 @@ If used with modern Typescript / Javascript frameworks (such as Angular, React o
 npm install @byomakase/omakase-player
 ```
 
+For a local tarball, run `npm run build && npm pack` in this repository, then
+install the resulting archive in the consuming project. The package's `types`
+entry points to `dist/index.d.ts`; keep that declaration entry and its referenced
+declarations in the archive alongside `dist/omakase-player.es.js`.
+
 Optionally, you can include default Omakase Player CSS stylesheet or import and use `omakase-player.scss` SCSS stylesheet.
 
 ```html

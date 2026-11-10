@@ -3,7 +3,7 @@
     "version": "1.3.0",
     "type": "module",
     "module": "./dist/omakase-player.es.js",
-    "types": "./dist/omakase-player.es.d.ts",
+    "types": "./dist/index.d.ts",
     "description": "## Omakase Player - Open source JavaScript framework for building frame accurate video experiences",
     "author": "ByOmakase",
     "homepage": "https://player.byomakase.org",
