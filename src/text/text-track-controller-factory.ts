@@ -74,8 +74,9 @@ export class TextTrackControllerFactory {
         return PlayerTextHandlerType.MEDIA_CAPTIONS;
       case FileFormatType.TTML:
         return PlayerTextHandlerType.IMSC;
-      case FileFormatType.STL:
       case FileFormatType.SCC:
+        return PlayerTextHandlerType.MEDIA_CAPTIONS;
+      case FileFormatType.STL:
         throw new Error(`Unplayable text fileFormatType. Convert to VTT | SRT fileFormatType`);
       default:
         throw new Error(`Unknown text fileFormatType: ${fileFormatType}`);

@@ -692,6 +692,18 @@ omakasePlayer.player
   });
 ```
 
+Sidecar text tracks also support SRT, SSA, ASS, TTML/DFXP, and SCC. SCC files are decoded to captions by the player; TTML/DFXP is rendered with the IMSC text handler. Set `fileFormatType` in the sidecar load options when the format cannot be inferred from the URL (for example, an XML-named DFXP file):
+
+```javascript
+import {FileFormatType, TrackType} from '@byomakase/omakase-player';
+
+omakasePlayer.player.loadSidecarTrack('https://example.com/captions.xml', {
+  trackType: TrackType.TEXT_TRACK,
+  fileFormatType: FileFormatType.TTML,
+  args: {id: 'captions', label: 'English', srclang: 'en'},
+});
+```
+
 ## Tracks
 
 ### Marker track

@@ -52,8 +52,8 @@ describe('TextTrackUtil', () => {
   });
 
   describe('isUnplayableTextTrackFileFormatType', () => {
-    it('should return true for SCC', () => {
-      expect(TextTrackUtil.isUnplayableTextTrackFileFormatType(FileFormatType.SCC)).toBe(true);
+    it('should return false for SCC', () => {
+      expect(TextTrackUtil.isUnplayableTextTrackFileFormatType(FileFormatType.SCC)).toBe(false);
     });
 
     it('should return true for STL', () => {
