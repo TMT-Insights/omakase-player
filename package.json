@@ -39,8 +39,8 @@
     "devDependencies": {
         "@types/node": "^24.3.0",
         "@types/sortablejs": "^1.15.9",
-        "@vitest/browser-playwright": "^4.1.11",
-        "@vitest/ui": "^4.1.11",
+        "@vitest/browser-playwright": "^4.1.12",
+        "@vitest/ui": "^4.1.12",
         "jsdom": "^27.0.1",
         "oidc-client-ts": "^3.5.0",
         "prettier": "^3.7.4",
@@ -48,9 +48,10 @@
         "typedoc": "^0.28.17",
         "typescript": "^5.9.2",
         "vite": "^8.0.0",
-        "vite-plugin-dts": "^4.5.4",
-        "vite-plugin-node-polyfills": "^0.28.0",
-        "vitest": "^4.1.11"
+        "stream-browserify": "^3.0.0",
+        "util": "^0.12.5",
+        "vite-plugin-dts": "^5.1.2",
+        "vitest": "^4.1.12"
     },
     "dependencies": {
         "@byomakase/omakase-ttconv-ts": "1.2.0",
@@ -83,6 +84,6 @@
         "@rollup/rollup-linux-x64-gnu": "^4.28.1"
     },
     "overrides": {
-        "minimatch": "^10.2.4"
+        "minimatch": "^11.0.1"
     }
 }
