@@ -86,6 +86,19 @@ describe('DASH to HLS bridge', () => {
     expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS="mp4a.40.2",AUDIO="audio"\naudio.m3u8');
   });
 
+  it('inherits audio sampling rates and allows representation overrides', () => {
+    const audio = (attributes = '') => `<AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2" audioSamplingRate="48000">
+      ${template}<Representation id="a" bandwidth="128000" ${attributes}/></AdaptationSet>`;
+    expect(parseDashManifest(mpd(audio()), sourceUrl).renditions[0]?.audioSamplingRate).toBe(48000);
+    expect(parseDashManifest(mpd(audio('audioSamplingRate="24000"')), sourceUrl).renditions[0]?.audioSamplingRate).toBe(24000);
+  });
+
+  it.each(['0', '-24000', '24000.5', 'invalid'])('rejects invalid audio sampling rates: %s', (rate) => {
+    const audio = `<AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2" audioSamplingRate="${rate}">
+      ${template}<Representation id="a" bandwidth="128000"/></AdaptationSet>`;
+    expect(() => parseDashManifest(mpd(audio), sourceUrl)).toThrow(/invalid audioSamplingRate/);
+  });
+
   it('inherits SegmentBase attributes and initialization ranges across MPD levels', () => {
     const xml = `<MPD mediaPresentationDuration="PT5S"><BaseURL>../assets/</BaseURL><Period>
       <SegmentBase timescale="1000" presentationTimeOffset="2000"><Initialization sourceURL="init.mp4" range="0-99"/></SegmentBase>

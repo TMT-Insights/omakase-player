@@ -38,6 +38,7 @@ export interface DashRendition {
   language?: string | undefined;
   label: string;
   channels?: string | undefined;
+  audioSamplingRate?: number | undefined;
   initializationUrl: string;
   initializationByteRange?: DashByteRange;
   segmentBase?: {indexRange: DashByteRange; mediaUrl: string};
@@ -216,6 +217,7 @@ function parseRendition(path: Element[], manifestUrl: string, periodDuration: nu
       id ||
       `${type} ${index + 1}`,
     channels,
+    audioSamplingRate: attr(path, 'audioSamplingRate') === undefined ? undefined : integer(attr(path, 'audioSamplingRate'), 'audioSamplingRate', undefined, 1),
     ...addressing,
   };
 }

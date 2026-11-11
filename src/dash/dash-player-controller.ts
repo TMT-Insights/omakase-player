@@ -16,19 +16,30 @@
 
 import {defer, finalize, from, map, type Observable, switchMap, takeUntil, tap} from 'rxjs';
 import {fromFetch} from 'rxjs/fetch';
-import {HlsPlayerController} from '../hls/hls-player-controller';
-import type {LoadMainMediaArgsType} from '../player/player-controller-api';
+import {HlsPlayerController, type HlsPlayerControllerConfig} from '../hls/hls-player-controller';
+import type {LoadMainMediaArgsType, PlayerDomController} from '../player/player-controller-api';
 import {AuthConfig} from '../common/authentication';
 import {ObserverBreaker} from '../common/observer-breaker';
 import {BlobUtil} from '../util/blob-util';
 import {OmpError} from '../types';
 import {parseDashManifest, writeDashMasterPlaylist, writeDashMediaPlaylist} from './dash-manifest';
 import {resolveDashSegmentIndexes} from './dash-segment-index';
+import {createDashFragmentLoader} from './dash-fragment-loader';
 
 /** Bridges a static MPD to HLS; the original MPD remains the source in serialized media state. */
 export class DashPlayerController extends HlsPlayerController {
   private readonly _dashLoadBreaker = new ObserverBreaker();
   private _playlistUrls: string[] = [];
+
+  constructor(playerDomController: PlayerDomController, config?: Partial<HlsPlayerControllerConfig>) {
+    super(playerDomController, {
+      ...config,
+      hlsConfig: {
+        ...config?.hlsConfig,
+        fLoader: createDashFragmentLoader(config?.hlsConfig?.fLoader ?? config?.hlsConfig?.loader),
+      },
+    });
+  }
 
   override loadMainMedia(args: LoadMainMediaArgsType): Observable<boolean> {
     return defer(() => {

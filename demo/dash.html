@@ -86,8 +86,8 @@
     </p>
     <p class="note">For audio/video playback in a browser with AAC support, load https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd.</p>
     <p class="note">
-      Use a static, single-period MPD with fragmented MP4 and SegmentTemplate or SegmentBase/SIDX addressing. SegmentBase media servers must support HTTP byte-range requests. Live, DRM, and embedded
-      subtitles are not supported yet. Streams must allow CORS.
+      Use a static, single-period MPD with fragmented MP4 and SegmentTemplate or SegmentBase/SIDX addressing. HTTP byte-range support is recommended; full-file HTTP 200 responses are streamed without
+      buffering the whole file, but may require downloading the prefix again for each fragment. Live, DRM, and embedded subtitles are not supported yet. Streams must allow CORS.
     </p>
   </body>
 </html>

@@ -3,11 +3,14 @@ import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {firstValueFrom, of, Subject, throwError} from 'rxjs';
 import type {LoadMainMediaArgsType, PlayerDomController} from '../../src/player/player-controller-api';
 
-const {loadHls, destroyHls} = vi.hoisted(() => ({loadHls: vi.fn(), destroyHls: vi.fn()}));
+const {loadHls, destroyHls, configureHls} = vi.hoisted(() => ({loadHls: vi.fn(), destroyHls: vi.fn(), configureHls: vi.fn()}));
 vi.mock('../../src/hls/hls-player-controller', async () => {
   const {ObserverBreaker} = await import('../../src/common/observer-breaker');
   return {
     HlsPlayerController: class {
+      constructor(...args: unknown[]) {
+        configureHls(...args);
+      }
       protected _loadBreaker = new ObserverBreaker();
       protected _destroyBreaker = new ObserverBreaker();
       loadMainMedia(args: LoadMainMediaArgsType) {
@@ -108,6 +111,23 @@ describe('DashPlayerController', () => {
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Range')).toBe('bytes=100-167');
     expect(loadHls).toHaveBeenCalledOnce();
     expect(blobs).toHaveLength(2);
+  });
+
+  it('accepts a full-file HTTP 200 response when loading SegmentBase indexes', async () => {
+    const segmentBaseXml = xml.replace(
+      '<SegmentTemplate duration="2" initialization="init.mp4" media="$Number$.m4s"/>',
+      '<BaseURL>video.mp4</BaseURL><SegmentBase indexRange="100-167"><Initialization range="0-99"/></SegmentBase>'
+    );
+    const file = new Uint8Array(1000);
+    file.set(new Uint8Array(createSidx()), 100);
+    fetchMock.mockResolvedValueOnce(new Response(segmentBaseXml)).mockResolvedValueOnce(new Response(file));
+    await expect(firstValueFrom(controller.loadMainMedia(args))).resolves.toBe(true);
+    expect(loadHls).toHaveBeenCalledOnce();
+    expect(blobs).toHaveLength(2);
+  });
+
+  it('installs the DASH fragment adapter without replacing other HLS configuration', () => {
+    expect(configureHls).toHaveBeenCalledWith(expect.anything(), {hlsConfig: {fLoader: expect.any(Function)}});
   });
 
   it('surfaces index errors without invoking HLS or creating playlists', async () => {

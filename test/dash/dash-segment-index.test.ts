@@ -35,6 +35,41 @@ describe('DASH SIDX parsing', () => {
     expect(parseDashSegmentIndex(data, track, 5)[0]?.byteRange).toEqual({offset: 100 + data.byteLength + 2 ** 32, length: 100});
   });
 
+  it('accepts a video composition offset without changing byte ranges or fragment durations', () => {
+    const data = createSidx({
+      timescale: 90000,
+      earliestTime: 7200,
+      references: [
+        {size: 100, duration: 187200},
+        {size: 200, duration: 187200},
+        {size: 300, duration: 57600},
+      ],
+    });
+    const segments = parseDashSegmentIndex(data, rendition(), 4.8);
+    expect(segments).toHaveLength(3);
+    [2.08, 2.08, 0.64].forEach((duration, index) => expect(segments[index]?.duration).toBeCloseTo(duration, 9));
+    expect(segments[0]?.byteRange).toEqual({offset: 100 + data.byteLength, length: 100});
+    expect(segments.reduce((total, segment) => total + segment.duration, 0)).toBeCloseTo(4.8);
+  });
+
+  it('still rejects indexes that require a leading presentation trim', () => {
+    const track = {...rendition(), presentationTimeOffset: 1};
+    expect(() => parseDashSegmentIndex(createSidx({earliestTime: 500}), track, 5)).toThrow(/leading trims/);
+  });
+
+  it('allows an AAC-LC tail shorter than one codec frame without padding or stretching audio', () => {
+    const track: DashRendition = {...rendition(), type: 'audio', codecs: 'mp4a.40.2', audioSamplingRate: 24000};
+    const data = createSidx({timescale: 24000, references: [{size: 100, duration: 119488}]});
+    const segments = parseDashSegmentIndex(data, track, 5);
+    expect(segments[0]?.duration).toBe(119488 / 24000);
+    expect(() => parseDashSegmentIndex(data, track, 119488 / 24000 + 1024 / 24000)).not.toThrow();
+    expect(() => parseDashSegmentIndex(data, track, 119488 / 24000 + 1025 / 24000)).toThrow(/cover/);
+    expect(() => parseDashSegmentIndex(data, track, 5.1)).toThrow(/cover/);
+    expect(() => parseDashSegmentIndex(data, {...track, audioSamplingRate: undefined}, 5)).toThrow(/cover/);
+    expect(() => parseDashSegmentIndex(data, {...track, codecs: 'other'}, 5)).toThrow(/cover/);
+    expect(() => parseDashSegmentIndex(data, {...track, type: 'video'}, 5)).toThrow(/cover/);
+  });
+
   it('computes offsets from the end of the SIDX box, not the end of indexRange', () => {
     const index = createSidx();
     const data = new ArrayBuffer(index.byteLength + 16);
@@ -64,7 +99,6 @@ describe('DASH SIDX parsing', () => {
     ['zero size', () => createSidx({references: [{size: 0, duration: 5000}]}), /size or duration/],
     ['empty references', () => createSidx({references: []}), /empty/],
     ['hierarchical references', () => createSidx({references: [{size: 100, duration: 5000, hierarchical: true}]}), /hierarchical/],
-    ['leading trim', () => createSidx({earliestTime: 500}), /presentationTimeOffset/],
     ['incomplete coverage', () => createSidx({references: [{size: 100, duration: 1000}]}), /cover/],
     ['truncated box', () => createSidx().slice(0, 20), /truncated/],
     ['unsafe 64-bit offset', () => createSidx({version: 1, firstOffset: 2 ** 53}), /64-bit/],
@@ -98,9 +132,38 @@ describe('DASH index loading', () => {
     await expect(firstValueFrom(resolveDashSegmentIndexes(parseDashManifest(xml, sourceUrl)))).resolves.toMatchObject({duration: 5});
   });
 
+  it('extracts SIDX at its absolute offset when the server ignores Range and returns HTTP 200', async () => {
+    const file = new Uint8Array(1000);
+    file.set(new Uint8Array(createSidx()), 100);
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(file)));
+    const manifest = await firstValueFrom(resolveDashSegmentIndexes(parseDashManifest(xml, sourceUrl)));
+    expect(manifest.renditions[0]?.segments).toEqual(parseDashSegmentIndex(createSidx(), rendition(), 5));
+  });
+
+  it('streams past the prefix, retains only the index, and cancels the rest of the full-file body', async () => {
+    const file = new Uint8Array(1000);
+    file.set(new Uint8Array(createSidx()), 100);
+    const cancel = vi.fn();
+    const chunks = [file.slice(0, 60), file.slice(60, 110), file.slice(110, 150), file.slice(150, 200)];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks.shift();
+        if (chunk) controller.enqueue(chunk);
+      },
+      cancel,
+    });
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(new Response(body)));
+    const manifest = await firstValueFrom(resolveDashSegmentIndexes(parseDashManifest(xml, sourceUrl)));
+    expect(manifest.renditions[0]?.segments).toHaveLength(3);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(body.locked).toBe(false);
+  });
+
   it.each([
     [() => new Response('', {status: 403}), /HTTP 403/],
-    [() => new Response(createSidx()), /byte-range support/],
+    [() => new Response(createSidx()), /truncated SIDX full-file response/],
+    [() => new Response(null), /empty SIDX full-file response/],
+    [() => new Response(null, {status: 204}), /unexpected HTTP 204/],
     [() => new Response(createSidx(), {status: 206, headers: {'Content-Range': 'bytes 0-67/1000'}}), /Content-Range/],
     [() => rangeResponse(createSidx().slice(0, 20)), /range response/],
   ])('surfaces invalid index responses', async (response, error) => {

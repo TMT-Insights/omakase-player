@@ -18,9 +18,37 @@ import {forkJoin, from, map, of, type Observable} from 'rxjs';
 import {fromFetch} from 'rxjs/fetch';
 import {AuthConfig} from '../common/authentication';
 import {OmpError} from '../types';
-import {type DashManifest, type DashRendition, type DashSegment, validateDashSegmentAlignment} from './dash-manifest';
+import {type DashByteRange, type DashManifest, type DashRendition, type DashSegment, validateDashSegmentAlignment} from './dash-manifest';
 
 const MAX_INDEX_BYTES = 16 * 1024 * 1024;
+
+async function readFullResponseIndex(response: Response, range: DashByteRange): Promise<ArrayBuffer> {
+  if (!response.body) {
+    return fail('empty SIDX full-file response');
+  }
+  const reader = response.body.getReader();
+  const index = new Uint8Array(range.length);
+  const end = range.offset + range.length;
+  let position = 0;
+  try {
+    while (position < end) {
+      const {done, value} = await reader.read();
+      if (done) {
+        return fail('truncated SIDX full-file response');
+      }
+      const start = Math.max(range.offset - position, 0);
+      const stop = Math.min(value.byteLength, end - position);
+      if (stop > start) {
+        index.set(value.subarray(start, stop), Math.max(position - range.offset, 0));
+      }
+      position += value.byteLength;
+    }
+    return index.buffer;
+  } finally {
+    await reader.cancel();
+    reader.releaseLock();
+  }
+}
 
 function fail(message: string): never {
   throw new OmpError(`DASH: ${message}`);
@@ -83,8 +111,11 @@ export function parseDashSegmentIndex(data: ArrayBuffer, rendition: DashRenditio
     }
     const earliestTime = version === 0 ? view.getUint32(payload + 12) : uint64(payload + 12);
     const firstOffset = version === 0 ? view.getUint32(payload + 16) : uint64(payload + 20);
-    if (Math.abs(earliestTime / timescale - rendition.presentationTimeOffset) > 0.001) {
-      return fail('the first SIDX segment must start at presentationTimeOffset; leading trims or gaps are not supported');
+    // SIDX reports presentation time, not decode time. B-frame composition offsets can
+    // put the first PTS after PTO even when the fragment's tfdt starts exactly at PTO.
+    // hls.js derives the playback origin from the actual fragment timestamps.
+    if (earliestTime / timescale < rendition.presentationTimeOffset - 0.001) {
+      return fail('SIDX begins before presentationTimeOffset; leading trims are not supported');
     }
     const referenceCount = view.getUint16(countOffset);
     const referencesStart = countOffset + 2;
@@ -119,7 +150,8 @@ export function parseDashSegmentIndex(data: ArrayBuffer, rendition: DashRenditio
       elapsedTicks += ticks;
       byteOffset = nextByteOffset;
     }
-    if (elapsedTicks / timescale < periodDuration - 0.001) {
+    const coverageTolerance = rendition.type === 'audio' && rendition.codecs === 'mp4a.40.2' && rendition.audioSamplingRate ? Math.max(0.001, 1024 / rendition.audioSamplingRate) : 0.001;
+    if (elapsedTicks / timescale < periodDuration - coverageTolerance) {
       return fail('SIDX does not cover the Period duration');
     }
     return segments;
@@ -148,14 +180,14 @@ export function resolveDashSegmentIndexes(manifest: DashManifest): Observable<Da
           if (!response.ok) {
             return fail(`HTTP ${response.status} ${response.statusText} for SIDX ${mediaUrl}`);
           }
-          if (response.status !== 206) {
-            return fail('SegmentBase requires HTTP byte-range support (206 Partial Content)');
+          if (response.status !== 200 && response.status !== 206) {
+            return fail(`unexpected HTTP ${response.status} for SIDX`);
           }
           const contentRange = response.headers.get('Content-Range');
-          if (contentRange && !new RegExp(`^bytes ${indexRange.offset}-${end}/(?:\\d+|\\*)$`, 'i').test(contentRange)) {
+          if (response.status === 206 && contentRange && !new RegExp(`^bytes ${indexRange.offset}-${end}/(?:\\d+|\\*)$`, 'i').test(contentRange)) {
             return fail('unexpected SIDX Content-Range');
           }
-          return from(response.arrayBuffer()).pipe(
+          return from(response.status === 200 ? readFullResponseIndex(response, indexRange) : response.arrayBuffer()).pipe(
             map((data) => {
               if (data.byteLength !== indexRange.length) {
                 return fail('truncated or oversized SIDX range response');
