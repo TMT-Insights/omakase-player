@@ -25,7 +25,7 @@ import {OmpError} from '../types';
 import {ManifestResourcesFetcher} from './hls-bridge/tams-resource-fetcher';
 import {buildTamsManifest} from './hls-bridge/tams-manifest-builder';
 import {TamsLiveManifestUpdater} from './hls-bridge/tams-live-manifest-updater';
-import {TamsManifestRegistry} from './hls-bridge/tams-manifest-registry';
+import {SyntheticManifestRegistry} from '../hls/synthetic-manifest-registry';
 import {TamsThumbnailGenerator} from './hls-bridge/tams-thumbnail-generator';
 import type {Manifest} from './hls-bridge/tams-adapter';
 import type {TamsMediaData} from './hls-bridge/model/tams-media-data-model';
@@ -335,7 +335,7 @@ export class TamsMainMediaSessionController implements MainMediaSessionControlle
     const urls = [manifest.url, ...(manifest.video?.values() ?? []), ...(manifest.audio?.values() ?? []), ...(manifest.text?.values() ?? [])];
 
     return urls.reduce<Record<string, string>>((snapshot, url) => {
-      const content = TamsManifestRegistry.get(url);
+      const content = SyntheticManifestRegistry.get(url);
       if (content !== undefined) {
         snapshot[url] = content;
       }

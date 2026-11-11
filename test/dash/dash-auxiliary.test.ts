@@ -46,6 +46,10 @@ const createResource = (data: BlobPart[], mime: string) => {
   return `blob:aux-${resources.length}`;
 };
 const load = (xml: string) => firstValueFrom(loadDashAuxiliaryTracks(parseDashManifest(xml, source), createResource));
+/** Two segments: never a direct sidecar, so the cues are downloaded and normalized. */
+const segmented = (extension = 'vtt') => `<SegmentTemplate duration="2" media="$Number$.${extension}"/>`;
+/** One byte-ranged file: no URL addresses it, so it is downloaded and normalized. */
+const ranged = (content: string, extension = 'vtt') => `<SegmentList><SegmentURL media="en.${extension}" mediaRange="0-${new TextEncoder().encode(content).length - 1}"/></SegmentList>`;
 
 beforeEach(() => {
   resources = [];
@@ -66,9 +70,31 @@ describe('DASH auxiliary tracks', () => {
     expect(UrlUtil.absolutizeUrl('https://example.com/images', 'sheet.jpg')).toBe('https://example.com/images/sheet.jpg');
     expect(UrlUtil.absolutizeUrl('https://example.com/images', 'https://cdn.example.com/sheet.jpg')).toBe('https://cdn.example.com/sheet.jpg');
   });
-  it('creates standalone WebVTT tracks with language, roles, markup and settings', async () => {
+  it('hands a single unshifted WebVTT file to the text track by URL, with language and roles', async () => {
     const [track] = await load(mpd(text('<BaseURL>en.vtt</BaseURL><Role value="caption"/><Role value="main"/>')));
-    expect(track!.state).toMatchObject({kind: 'captions', srclang: 'en', default: true, sourceFileFormatType: 'VTT'});
+    expect(track!.state).toMatchObject({kind: 'captions', srclang: 'en', default: true, sourceFileFormatType: 'VTT', customAttrs: {dashAuxiliary: true}});
+    expect(track!.source).toMatchObject({url: 'https://example.com/en.vtt'});
+    expect(track!.areTimedItemsFetched).toBeFalsy();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(resources).toHaveLength(0);
+  });
+
+  it('hands a single unshifted TTML file to the text track by URL', async () => {
+    const [track] = await load(mpd(text('<BaseURL>en.ttml</BaseURL>', 'application/ttml+xml')));
+    expect(track!.state).toMatchObject({sourceFileFormatType: 'TTML', srclang: 'en'});
+    expect(track!.source).toMatchObject({url: 'https://example.com/en.ttml'});
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a sidecar that needs a time shift instead of passing it through', async () => {
+    const xml = mpd(text('<BaseURL>en.vtt</BaseURL><SegmentBase timescale="1" presentationTimeOffset="1"/>'));
+    await load(xml);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(resources[0]!.data.join('')).toContain('00:00:00.000 --> 00:00:02.500');
+  });
+
+  it('downloads and normalizes WebVTT markup and settings', async () => {
+    await load(mpd(text(ranged(vtt))));
     expect(resources[0]!.data.join('')).toContain('00:00:00.500 --> 00:00:03.500 line:80% align:start\n<b>Hello</b>');
     expect(fetch).toHaveBeenCalledWith('https://example.com/en.vtt', expect.objectContaining({signal: expect.any(AbortSignal)}));
   });
@@ -85,8 +111,9 @@ describe('DASH auxiliary tracks', () => {
   });
 
   it('applies WebVTT timestamp maps and inline timestamps', async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response('WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:10.000,MPEGTS:0\n\n00:00:10.500 --> 00:00:11.500\n<00:00:10.750>Hello'));
-    await load(mpd(text('<BaseURL>en.vtt</BaseURL>')));
+    const mapped = 'WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:10.000,MPEGTS:0\n\n00:00:10.500 --> 00:00:11.500\n<00:00:10.750>Hello';
+    vi.mocked(fetch).mockImplementation(async () => new Response(mapped));
+    await load(mpd(text(ranged(mapped))));
     expect(resources[0]!.data.join('')).toContain('00:00:00.500 --> 00:00:01.500\n<00:00:00.750>Hello');
   });
 
@@ -101,32 +128,41 @@ describe('DASH auxiliary tracks', () => {
 
   it('preserves styled TTML documents as well as normalized cue data', async () => {
     vi.mocked(fetch).mockResolvedValue(new Response(ttml));
-    const [track] = await load(mpd(text('<BaseURL>en.ttml</BaseURL>', 'application/ttml+xml')));
+    const [track] = await load(mpd(text(ranged(ttml, 'ttml'), 'application/ttml+xml')));
     expect(track!.state).toMatchObject({imscDocuments: [{url: 'blob:aux-1', start: 0, end: 4, timeOffset: 0}]});
     expect(resources[0]!.data[0]).toBe(ttml);
     expect(resources[1]!.data.join('')).toContain('Hello');
   });
 
   it('retains TTML cues that begin at zero', async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response(ttml.replace('begin="0.5s"', 'begin="0s"')));
-    await load(mpd(text('<BaseURL>en.ttml</BaseURL>', 'application/ttml+xml')));
+    const zero = ttml.replace('begin="0.5s"', 'begin="0s"');
+    vi.mocked(fetch).mockResolvedValue(new Response(zero));
+    await load(mpd(text(ranged(zero, 'ttml'), 'application/ttml+xml')));
     expect(resources.at(-1)!.data.join('')).toContain('00:00:00.000 --> 00:00:03.500\nHello');
   });
 
-  it('creates tiled thumbnail VTT without squeezing the final partial sprite sheet', async () => {
-    vi.mocked(fetch).mockImplementation(async () => new Response(new Uint8Array([1, 2, 3])));
+  it('creates tiled thumbnail VTT referencing the images by URL, without squeezing the final partial sprite sheet', async () => {
     await load(
       mpd(
         '<AdaptationSet mimeType="image/jpeg"><EssentialProperty schemeIdUri="http://dashif.org/guidelines/thumbnail_tile" value="2x2"/><SegmentTemplate duration="8" media="$Number$.jpg"/><Representation id="images" width="200" height="100"/></AdaptationSet>',
         10
       )
     );
-    const output = resources.at(-1)!.data.join('');
-    expect(output).toContain('00:00:00.000 --> 00:00:02.000\nblob:aux-1#xywh=0,0,100,50');
-    expect(output).toContain('00:00:06.000 --> 00:00:08.000\nblob:aux-1#xywh=100,50,100,50');
-    expect(output).toContain('00:00:08.000 --> 00:00:10.000\nblob:aux-2#xywh=0,0,100,50');
-    expect(output).not.toContain('blob:aux-2#xywh=100');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(resources).toHaveLength(1);
+    const output = resources[0]!.data.join('');
+    expect(output).toContain('00:00:00.000 --> 00:00:02.000\nhttps://example.com/1.jpg#xywh=0,0,100,50');
+    expect(output).toContain('00:00:06.000 --> 00:00:08.000\nhttps://example.com/1.jpg#xywh=100,50,100,50');
+    expect(output).toContain('00:00:08.000 --> 00:00:10.000\nhttps://example.com/2.jpg#xywh=0,0,100,50');
+    expect(output).not.toContain('2.jpg#xywh=100');
+  });
+
+  it('downloads only byte-range thumbnail sprites, which no URL can address', async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response(new Uint8Array([1, 2, 3]), {status: 206}));
+    await load(mpd('<AdaptationSet mimeType="image/jpeg"><SegmentList duration="4"><SegmentURL media="sprites.bin" mediaRange="0-2"/></SegmentList><Representation id="images"/></AdaptationSet>'));
+    expect(fetch).toHaveBeenCalledOnce();
     expect(resources[0]!.mime).toBe('image/jpeg');
+    expect(resources.at(-1)!.data.join('')).toContain('00:00:00.000 --> 00:00:04.000\nblob:aux-1');
   });
 
   it('supports byte-range raw resources when the server ignores Range and authenticates them', async () => {
@@ -158,7 +194,8 @@ describe('DASH auxiliary tracks', () => {
       requestSignal = init!.signal!;
       return new Promise((_resolve, reject) => requestSignal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
     });
-    const subscription = loadDashAuxiliaryTracks(parseDashManifest(mpd(text('<BaseURL>en.vtt</BaseURL>')), source), createResource).subscribe();
+    const subscription = loadDashAuxiliaryTracks(parseDashManifest(mpd(text(segmented())), source), createResource).subscribe();
+    await vi.waitFor(() => expect(requestSignal).toBeDefined());
     subscription.unsubscribe();
     expect(requestSignal!.aborted).toBe(true);
     expect(resources).toHaveLength(0);
@@ -166,12 +203,12 @@ describe('DASH auxiliary tracks', () => {
 
   it.each([403, 404, 500])('surfaces HTTP %s instead of silently dropping subtitles', async (status) => {
     vi.mocked(fetch).mockResolvedValue(new Response('', {status}));
-    await expect(load(mpd(text('<BaseURL>en.vtt</BaseURL>')))).rejects.toThrow(`HTTP ${status}`);
+    await expect(load(mpd(text(segmented())))).rejects.toThrow(`HTTP ${status}`);
   });
 
   it('rejects invalid VTT, malformed tiles and encrypted/out-of-scope tracks', async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response('invalid'));
-    await expect(load(mpd(text('<BaseURL>en.vtt</BaseURL>')))).rejects.toThrow(/WebVTT/);
+    vi.mocked(fetch).mockImplementation(async () => new Response('invalid'));
+    await expect(load(mpd(text(segmented())))).rejects.toThrow(/WebVTT/);
     expect(() =>
       parseDashManifest(mpd('<AdaptationSet mimeType="image/jpeg"><EssentialProperty schemeIdUri="http://dashif.org/guidelines/thumbnail_tile" value="0x2"/><Representation/></AdaptationSet>'), source)
     ).toThrow(/thumbnail/);
@@ -227,7 +264,7 @@ describe('fragmented MP4 subtitles', () => {
   describe('DASH styled text integration', () => {
     it('retains IMSC metadata when serialized and preloaded into distinct sidecar tracks', async () => {
       vi.mocked(fetch).mockResolvedValue(new Response(ttml));
-      const [track] = await load(mpd(text('<BaseURL>en.ttml</BaseURL>', 'application/ttml+xml')));
+      const [track] = await load(mpd(text(ranged(ttml, 'ttml'), 'application/ttml+xml')));
       const restored = MediaDeserializer.createTrack(track!.state);
       expect(restored.state).toMatchObject({imscDocuments: [{start: 0, end: 4}]});
       const repository = new TrackRepository();

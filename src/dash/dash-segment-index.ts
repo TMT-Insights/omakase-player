@@ -17,11 +17,45 @@
 import {Observable} from 'rxjs';
 import {AuthConfig} from '../common/authentication';
 import {OmpError} from '../types';
-import {type DashByteRange, type DashIndexSource, type DashManifest, type DashRendition, type DashSegment, stitchDashPeriods, validateDashSegmentAlignment} from './dash-manifest';
+import {
+  concatDashTrack,
+  type DashByteRange,
+  type DashIndexSource,
+  type DashManifest,
+  type DashRendition,
+  type DashSegment,
+  type DashTrackPlan,
+  stitchDashPeriods,
+  validateDashSegmentAlignment,
+} from './dash-manifest';
 
 const MAX_INDEX_BYTES = 16 * 1024 * 1024;
+/** First read when locating `moov`/`sidx`; covers both in typical files, so discovery is one request. */
+const DISCOVERY_PROBE_BYTES = 16 * 1024;
+/** Parallel index requests per track (per-segment indexes) and per Period (renditions). */
+const INDEX_CONCURRENCY = 6;
 
-async function readFullResponseIndex(response: Response, range: DashByteRange): Promise<ArrayBuffer> {
+/** Like `Promise.all(items.map(fn))` with at most `limit` calls in flight; stops starting calls after a failure. */
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const worker = async () => {
+    while (!failed && next < items.length) {
+      const index = next++;
+      try {
+        results[index] = await fn(items[index]!, index);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  await Promise.all(Array.from({length: Math.min(limit, items.length)}, worker));
+  return results;
+}
+
+async function readFullResponseIndex(response: Response, range: DashByteRange, allowShort = false): Promise<ArrayBuffer> {
   if (!response.body) {
     return fail('empty SIDX full-file response');
   }
@@ -33,6 +67,9 @@ async function readFullResponseIndex(response: Response, range: DashByteRange): 
     while (position < end) {
       const {done, value} = await reader.read();
       if (done) {
+        if (allowShort) {
+          return index.slice(0, Math.max(position - range.offset, 0)).buffer;
+        }
         return fail('truncated SIDX full-file response');
       }
       const start = Math.max(range.offset - position, 0);
@@ -184,13 +221,21 @@ export function parseDashSegmentIndex(data: ArrayBuffer, rendition: DashRenditio
   );
 }
 
-interface IndexBudget {
+/** Request, byte and segment limits shared by every index request of one MPD load. */
+export interface IndexBudget {
   bytes: number;
   requests: number;
   segments: number;
 }
 
-async function fetchIndex(source: DashIndexSource, signal: AbortSignal, budget: IndexBudget): Promise<{data: ArrayBuffer; total?: number}> {
+export function createDashIndexBudget(): IndexBudget {
+  return {bytes: 0, requests: 0, segments: 0};
+}
+
+/**
+ * @param allowShort accept fewer bytes than requested when the resource ends first (discovery probes)
+ */
+async function fetchIndex(source: DashIndexSource, signal: AbortSignal, budget: IndexBudget, allowShort = false): Promise<{data: ArrayBuffer; total?: number}> {
   signal.throwIfAborted();
   if (++budget.requests > 2048) {
     return fail('too many index requests');
@@ -212,13 +257,17 @@ async function fetchIndex(source: DashIndexSource, signal: AbortSignal, budget: 
     return fail(`unexpected HTTP ${response.status} for SIDX`);
   }
   const contentRange = response.headers.get('Content-Range');
-  if (range && response.status === 206 && contentRange && !new RegExp(`^bytes ${range.offset}-${range.offset + range.length - 1}/(?:\\d+|\\*)$`, 'i').test(contentRange)) {
-    return fail('unexpected SIDX Content-Range');
+  if (range && response.status === 206 && contentRange) {
+    const match = /^bytes (\d+)-(\d+)\/(?:\d+|\*)$/i.exec(contentRange);
+    const end = range.offset + range.length - 1;
+    if (!match || Number(match[1]) !== range.offset || (allowShort ? Number(match[2]) > end : Number(match[2]) !== end)) {
+      return fail('unexpected SIDX Content-Range');
+    }
   }
   const total = response.status === 200 ? Number(response.headers.get('Content-Length')) || undefined : Number(contentRange?.split('/')[1]) || undefined;
   let data: ArrayBuffer;
   if (range && response.status === 200) {
-    data = await readFullResponseIndex(response, range);
+    data = await readFullResponseIndex(response, range, allowShort);
   } else {
     if (!response.body) {
       return fail('empty SIDX response');
@@ -248,7 +297,7 @@ async function fetchIndex(source: DashIndexSource, signal: AbortSignal, budget: 
       reader.releaseLock();
     }
   }
-  if (range && data.byteLength !== range.length) {
+  if (range && (allowShort ? total !== undefined && data.byteLength < Math.min(range.length, total - range.offset) : data.byteLength !== range.length)) {
     return fail('truncated or oversized SIDX range response');
   }
   budget.bytes += data.byteLength;
@@ -266,12 +315,13 @@ async function resolveIndex(
   signal: AbortSignal,
   budget: IndexBudget,
   depth = 0,
-  expectedTime?: number
+  expectedTime?: number,
+  prefetched?: ArrayBuffer
 ): Promise<DashSegment[]> {
   if (depth > 8) {
     return fail('SIDX nesting exceeds 8 levels');
   }
-  const {data} = await fetchIndex(source, signal, budget);
+  const data = prefetched ?? (await fetchIndex(source, signal, budget)).data;
   const index = readSidx(data, source.range?.offset ?? 0);
   if (expectedTime !== undefined && Math.abs(index.earliestTime - expectedTime) > 0.001) {
     return fail('nested SIDX timestamps do not match the parent index');
@@ -304,38 +354,106 @@ async function resolveIndex(
   return depth ? segments : clipSegments(segments, rendition, duration);
 }
 
-async function discoverBoxes(
-  url: string,
-  signal: AbortSignal,
-  budget: IndexBudget,
-  needIndex: boolean,
-  needInitialization = true
-): Promise<{initialization?: DashByteRange; index?: DashByteRange; media?: DashByteRange}> {
+/** Contiguous window over the start of a resource, grown or moved by Range requests as boxes are walked. */
+class RangeReader {
+  private _data = new Uint8Array(0);
+  private _start = 0;
+  /** Resource size, once a response has revealed it. */
+  total: number | undefined;
+
+  constructor(
+    private readonly _url: string,
+    private readonly _signal: AbortSignal,
+    private readonly _budget: IndexBudget
+  ) {}
+
+  private get end(): number {
+    return this._start + this._data.byteLength;
+  }
+
+  /** Bytes `[offset, offset + length)`, fewer if the resource ends first. */
+  async read(offset: number, length: number): Promise<Uint8Array> {
+    const want = offset + length;
+    if (offset < this._start || offset > this.end) {
+      // skipping an unneeded box (or moving backwards): start a new window rather than download the gap
+      this._data = new Uint8Array(0);
+      this._start = offset;
+    }
+    while (this.end < want && (this.total === undefined || this.end < this.total)) {
+      const requested = Math.max(want - this.end, DISCOVERY_PROBE_BYTES);
+      const {data, total} = await fetchIndex({url: this._url, range: {offset: this.end, length: requested}}, this._signal, this._budget, true);
+      if (total !== undefined) {
+        this.total = total;
+      }
+      if (data.byteLength < requested) {
+        this.total = this.end + data.byteLength;
+      }
+      const grown = new Uint8Array(this._data.byteLength + data.byteLength);
+      grown.set(this._data);
+      grown.set(new Uint8Array(data), this._data.byteLength);
+      this._data = grown;
+    }
+    return this._data.subarray(offset - this._start, Math.min(want, this.end) - this._start);
+  }
+
+  /** A copy of `range` if it is already buffered. */
+  peek(range: DashByteRange): ArrayBuffer | undefined {
+    if (range.offset < this._start || range.offset + range.length > this.end) {
+      return undefined;
+    }
+    return this._data.slice(range.offset - this._start, range.offset - this._start + range.length).buffer;
+  }
+}
+
+interface DiscoveredBoxes {
+  initialization?: DashByteRange;
+  index?: DashByteRange;
+  /** The bytes of {@link index}, already downloaded during discovery. */
+  indexData?: ArrayBuffer;
+  media?: DashByteRange;
+  reader: RangeReader;
+}
+
+async function discoverBoxes(url: string, signal: AbortSignal, budget: IndexBudget, needIndex: boolean, needInitialization = true): Promise<DiscoveredBoxes> {
+  const reader = new RangeReader(url, signal, budget);
   let offset = 0;
   let initialization: DashByteRange | undefined;
   let index: DashByteRange | undefined;
+  let indexData: ArrayBuffer | undefined;
+  const found = () => ({...(initialization ? {initialization} : {}), ...(index ? {index} : {}), ...(indexData ? {indexData} : {}), reader});
   for (let count = 0; count < 1024; count++) {
-    const {data, total} = await fetchIndex({url, range: {offset, length: 16}}, signal, budget);
-    const view = new DataView(data);
-    const type = String.fromCharCode(...new Uint8Array(data, 4, 4));
+    const header = await reader.read(offset, 16);
+    if (header.byteLength < 8) return fail('MP4 initialization/index not found before the end of the file');
+    const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+    const type = String.fromCharCode(...header.subarray(4, 8));
     let size = view.getUint32(0);
-    const header = size === 1 ? 16 : 8;
-    if (size === 1) size = safeInteger(view.getUint32(8) * 2 ** 32 + view.getUint32(12), 'box size');
+    const headerSize = size === 1 ? 16 : 8;
+    if (size === 1) {
+      if (header.byteLength < 16) return fail('truncated MP4 box');
+      size = safeInteger(view.getUint32(8) * 2 ** 32 + view.getUint32(12), 'box size');
+    }
+    const total = reader.total;
     if (size === 0 && total !== undefined) size = total - offset;
-    if (size < header) return fail('invalid MP4 box during initialization/index discovery');
+    if (size < headerSize) return fail('invalid MP4 box during initialization/index discovery');
     const end = safeInteger(offset + size, 'box end');
     if (total !== undefined && end > total) return fail('truncated MP4 box');
     if (type === 'moov') {
       if (end > MAX_INDEX_BYTES) return fail('discovered MP4 initialization exceeds 16 MiB');
       initialization = {offset: 0, length: end};
     }
-    if (type === 'sidx') index = {offset, length: size};
-    if ((!needInitialization || initialization) && (!needIndex || index)) return {...(initialization ? {initialization} : {}), ...(index ? {index} : {})};
+    if (type === 'sidx' && needIndex && !index) {
+      if (size > MAX_INDEX_BYTES) return fail(`SIDX exceeds ${MAX_INDEX_BYTES} bytes`);
+      const bytes = await reader.read(offset, size);
+      if (bytes.byteLength < size) return fail('truncated MP4 box');
+      index = {offset, length: size};
+      indexData = bytes.slice().buffer;
+    }
+    if ((!needInitialization || initialization) && (!needIndex || index)) return found();
     if (type === 'moof') {
       if (needInitialization && !initialization) return fail('fragmented MP4 requires moov before moof');
       if (total === undefined) return fail('implicit unindexed MP4 requires a known file size');
       if (total - offset > 64 * 1024 * 1024) return fail('implicit unindexed MP4 exceeds the 64 MiB single-segment limit; provide SIDX or explicit segments');
-      return {...(initialization ? {initialization} : {}), media: {offset, length: total - offset}};
+      return {...found(), media: {offset, length: total - offset}};
     }
     if (type === 'mdat') return fail('implicit addressing requires fragmented MP4, not progressive MP4');
     offset = end;
@@ -343,27 +461,34 @@ async function discoverBoxes(
   return fail('MP4 initialization/index discovery exceeds 1024 boxes');
 }
 
-async function resolveRendition(rendition: DashRendition, duration: number, signal: AbortSignal, budget: IndexBudget): Promise<DashRendition> {
+/** Resolves one rendition's indexes and implicit initialization within a Period of `duration` seconds. */
+export async function resolveDashRendition(rendition: DashRendition, duration: number, signal: AbortSignal, budget: IndexBudget): Promise<DashRendition> {
   let resolved = {...rendition};
   const addressing = rendition.segmentBase;
   if (addressing) {
     let source: DashIndexSource = {url: addressing.indexUrl ?? addressing.mediaUrl, range: addressing.indexRange};
-    if ((!source.range && !addressing.indexUrl) || rendition.discoverInitialization) {
-      const boxes = await discoverBoxes(addressing.mediaUrl, signal, budget, !source.range && !addressing.indexUrl, !!rendition.discoverInitialization);
+    let prefetched: ArrayBuffer | undefined;
+    const needIndex = !source.range && !addressing.indexUrl;
+    if (needIndex || rendition.discoverInitialization) {
+      const boxes = await discoverBoxes(addressing.mediaUrl, signal, budget, needIndex, !!rendition.discoverInitialization);
       if (rendition.discoverInitialization) {
         if (!boxes.initialization) return fail('MP4 initialization could not be discovered');
         resolved.initializationByteRange = boxes.initialization;
         delete resolved.discoverInitialization;
       }
-      if (!source.range && !addressing.indexUrl) {
+      if (needIndex) {
         if (boxes.media) {
           resolved.segments = [{url: addressing.mediaUrl, duration, byteRange: boxes.media}];
           return resolved;
         }
         source = {url: addressing.mediaUrl, range: boxes.index};
+        prefetched = boxes.indexData;
+      } else if (source.url === addressing.mediaUrl && source.range) {
+        // an explicit indexRange usually sits right after moov, inside the discovery probe
+        prefetched = boxes.reader.peek(source.range);
       }
     }
-    resolved.segments = await resolveIndex(source, rendition, addressing.mediaUrl, duration, signal, budget);
+    resolved.segments = await resolveIndex(source, rendition, addressing.mediaUrl, duration, signal, budget, 0, undefined, prefetched);
   } else {
     if (rendition.discoverInitialization) {
       const boxes = await discoverBoxes(rendition.initializationUrl, signal, budget, false);
@@ -371,46 +496,49 @@ async function resolveRendition(rendition: DashRendition, duration: number, sign
       resolved.initializationByteRange = boxes.initialization;
       delete resolved.discoverInitialization;
     }
-    const segments: DashSegment[] = [];
-    for (const segment of rendition.segments) {
-      if (segment.index) {
-        const segmentStart = segment.presentationTime ?? 0;
-        const indexed = await resolveIndex(
-          segment.index,
-          {...rendition, presentationTimeOffset: rendition.auxiliary ? rendition.presentationTimeOffset + segmentStart : 0},
-          segment.url,
-          segment.duration,
-          signal,
-          budget
-        );
-        const range = segment.byteRange;
-        if (
-          range &&
-          indexed.some((subsegment) => !subsegment.byteRange || subsegment.byteRange.offset < range.offset || subsegment.byteRange.offset + subsegment.byteRange.length > range.offset + range.length)
-        ) {
-          return fail('indexed subsegments exceed SegmentURL@mediaRange');
-        }
-        for (const subsegment of indexed) {
-          segments.push(rendition.auxiliary ? {...subsegment, presentationTime: segmentStart + (subsegment.presentationTime ?? 0)} : subsegment);
-        }
-      } else {
-        segments.push(segment);
+    const resolvedSegments = await mapLimit(rendition.segments, INDEX_CONCURRENCY, async (segment): Promise<DashSegment[]> => {
+      if (!segment.index) {
+        return [segment];
       }
-    }
-    resolved.segments = segments;
+      const segmentStart = segment.presentationTime ?? 0;
+      const indexed = await resolveIndex(
+        segment.index,
+        {...rendition, presentationTimeOffset: rendition.auxiliary ? rendition.presentationTimeOffset + segmentStart : 0},
+        segment.url,
+        segment.duration,
+        signal,
+        budget
+      );
+      const range = segment.byteRange;
+      if (
+        range &&
+        indexed.some((subsegment) => !subsegment.byteRange || subsegment.byteRange.offset < range.offset || subsegment.byteRange.offset + subsegment.byteRange.length > range.offset + range.length)
+      ) {
+        return fail('indexed subsegments exceed SegmentURL@mediaRange');
+      }
+      return rendition.auxiliary ? indexed.map((subsegment) => ({...subsegment, presentationTime: segmentStart + (subsegment.presentationTime ?? 0)})) : indexed;
+    });
+    resolved.segments = resolvedSegments.flat();
   }
   return resolved;
 }
 
+/**
+ * Resolves one HLS track: each of its per-Period renditions (indexes, discovered initialization),
+ * joined across Periods. Used to build a media playlist only when hls.js asks for it.
+ */
+export async function resolveDashTrack(plan: DashTrackPlan, signal: AbortSignal, budget: IndexBudget): Promise<DashRendition> {
+  const resolved = await mapLimit(plan.parts, INDEX_CONCURRENCY, ({period, rendition}) => resolveDashRendition(rendition, period.duration, signal, budget));
+  return concatDashTrack(plan, resolved);
+}
+
+/** Resolves every rendition of every Period up front (auxiliary tracks, and callers that need the whole manifest). */
 export function resolveDashSegmentIndexes(manifest: DashManifest): Observable<DashManifest> {
   return new Observable((subscriber) => {
     const controller = new AbortController();
-    const budget = {bytes: 0, requests: 0, segments: 0};
+    const budget = createDashIndexBudget();
     const resolvePeriod = async (period: {duration: number; renditions: DashRendition[]}) => {
-      const renditions: DashRendition[] = [];
-      for (const rendition of period.renditions) {
-        renditions.push(await resolveRendition(rendition, period.duration, controller.signal, budget));
-      }
+      const renditions = await mapLimit(period.renditions, INDEX_CONCURRENCY, (rendition) => resolveDashRendition(rendition, period.duration, controller.signal, budget));
       validateDashSegmentAlignment({duration: period.duration, renditions});
       return renditions;
     };

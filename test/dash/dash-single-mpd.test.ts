@@ -196,7 +196,43 @@ describe('single-MPD segment addressing', () => {
     const track = (await resolve(mpd(period(video('<BaseURL>video.mp4</BaseURL>'))))).renditions[0]!;
     expect(track.initializationByteRange).toEqual({offset: 0, length: 32});
     expect(track.segments[0]!.byteRange).toEqual({offset: 76, length: 100});
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // one probe covers ftyp, moov and sidx; the probed SIDX bytes are parsed without another request
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new Headers(fetchMock.mock.calls[0]![1]?.headers).get('Range')).toBe('bytes=0-16383');
+  });
+
+  it('extends the probe when the SIDX runs past it and skips large boxes without downloading them', async () => {
+    const sidx = createSidx({references: [{size: 100, duration: 4000}]});
+    const moov = 40000; // after a 40 KB box the probe moves rather than downloading the gap
+    const sidxOffset = moov + 16384 - 10; // straddles the end of the second probe
+    const file = new Uint8Array(sidxOffset + sidx.byteLength);
+    const view = new DataView(file.buffer);
+    const header = (offset: number, size: number, type: string) => {
+      view.setUint32(offset, size);
+      file.set(
+        [...type].map((char) => char.charCodeAt(0)),
+        offset + 4
+      );
+    };
+    header(0, moov, 'free');
+    header(moov, 16, 'moov');
+    header(moov + 16, sidxOffset - moov - 16, 'free');
+    file.set(new Uint8Array(sidx), sidxOffset);
+    const ranges: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+        const range = new Headers(init?.headers).get('Range')!;
+        ranges.push(range);
+        const [start, end] = range.slice(6).split('-').map(Number) as [number, number];
+        const body = file.slice(start, Math.min(end + 1, file.length));
+        return new Response(body, {status: 206, headers: {'Content-Range': `bytes ${start}-${start + body.length - 1}/${file.length}`}});
+      })
+    );
+    const track = (await resolve(mpd(period(video('<BaseURL>video.mp4</BaseURL>'))))).renditions[0]!;
+    expect(track.initializationByteRange).toEqual({offset: 0, length: moov + 16});
+    expect(track.segments[0]!.byteRange).toEqual({offset: file.length, length: 100});
+    expect(ranges).toEqual(['bytes=0-16383', `bytes=${moov}-${moov + 16383}`, `bytes=${moov + 16384}-${moov + 2 * 16384 - 1}`]);
   });
 
   it('supports small unindexed fragmented files as a single segment and rejects huge ones', async () => {
@@ -219,7 +255,10 @@ describe('single-MPD segment addressing', () => {
     const xml = mpd(period(video('<BaseURL>video.mp4</BaseURL>')));
     const track = (await resolve(xml)).renditions[0]!;
     expect(track.segments).toEqual([{url: 'https://example.com/video.mp4', duration: 4, byteRange: {offset: 32, length: 68}}]);
-    fetchMock.mockImplementation(async () => new Response(file, {headers: {'Content-Length': String(128 * 1024 * 1024)}}));
+    // the probe reads past the first boxes of a large file, so serve more than its 16 KiB
+    const large = new Uint8Array(32 * 1024);
+    large.set(file);
+    fetchMock.mockImplementation(async () => new Response(large, {headers: {'Content-Length': String(128 * 1024 * 1024)}}));
     await expect(resolve(xml)).rejects.toThrow(/64 MiB/);
   });
 });
@@ -236,7 +275,7 @@ describe('single-MPD Periods and pre-authored splices', () => {
     const track = manifest.renditions[0]!;
     expect(track.segments.map((segment) => segment.duration)).toEqual([2, 2, 2, 2]);
     const playlist = writeDashMediaPlaylist(track);
-    expect(playlist).toContain('#EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI="https://example.com/ad-init.mp4"\n#EXTINF:2.000000000,');
+    expect(playlist).toContain('#EXT-X-DISCONTINUITY\n#EXT-X-MAP:URI="https://example.com/ad-init.mp4"\n#EXTINF:2,');
     expect(playlist.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(1);
     expect(manifest.periods![0]!.renditions[0]!.segments).toHaveLength(2);
   });

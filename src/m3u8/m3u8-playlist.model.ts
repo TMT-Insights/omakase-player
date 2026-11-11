@@ -108,12 +108,20 @@ export class M3U8StreamInfo {
    */
   uri: string | null;
 
-  constructor(bandwidth: number, averageBandwidth: number, resolution: {width: number; height: number} | null, frameRate: number | null, uri: string | null) {
+  /**
+   * RFC 6381 codec list of every media type the variant carries. Omitted from the playlist when undefined.
+   */
+  codecs?: string | undefined;
+
+  constructor(bandwidth: number, averageBandwidth: number, resolution: {width: number; height: number} | null, frameRate: number | null, uri: string | null, codecs?: string | undefined) {
     this.bandwidth = bandwidth;
     this.averageBandwidth = averageBandwidth;
     this.resolution = resolution;
     this.frameRate = frameRate;
     this.uri = uri;
+    if (codecs !== undefined) {
+      this.codecs = codecs;
+    }
   }
 }
 
@@ -190,6 +198,21 @@ export type M3U8SegmentMap = {
    * URI pointing to the initialisation segment.
    */
   uri: string;
+
+  /**
+   * Sub-range of the resource holding the initialisation segment.
+   */
+  byteRange?: M3U8ByteRange | undefined;
+};
+
+/**
+ * Sub-range of a resource (EXT-X-BYTERANGE / BYTERANGE attribute).
+ */
+export type M3U8ByteRange = {
+  /** Number of bytes in the sub-range. */
+  length: number;
+  /** Byte offset of the sub-range from the start of the resource. */
+  offset: number;
 };
 
 /**
@@ -212,11 +235,28 @@ export class M3U8Segment {
    */
   map?: M3U8SegmentMap;
 
-  constructor(duration: number, uri: string, map?: M3U8SegmentMap) {
+  /**
+   * Sub-range of {@link uri} holding this segment, for byte-range addressed media.
+   */
+  byteRange?: M3U8ByteRange;
+
+  /**
+   * Marks an encoding discontinuity before this segment (EXT-X-DISCONTINUITY). The writer re-emits
+   * this segment's EXT-X-MAP after it, even when the URI is unchanged.
+   */
+  discontinuity?: boolean;
+
+  constructor(duration: number, uri: string, map?: M3U8SegmentMap, byteRange?: M3U8ByteRange, discontinuity?: boolean) {
     this.duration = duration;
     this.uri = uri;
     if (map) {
       this.map = map;
+    }
+    if (byteRange) {
+      this.byteRange = byteRange;
+    }
+    if (discontinuity) {
+      this.discontinuity = discontinuity;
     }
   }
 }

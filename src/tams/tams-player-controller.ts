@@ -23,9 +23,9 @@ import {FileFormatType} from '../common';
 import {UrlSource} from '../source';
 import {OmpError} from '../types';
 import {BlobUtil} from '../util/blob-util';
-import {TamsManifestLoader} from './tams-loader';
+import {SyntheticManifestLoader} from '../hls/synthetic-manifest-loader';
 import {createTamsSubtitleLoader, TamsSubtitleShiftRegistry} from './tams-subtitle-loader';
-import {TamsManifestRegistry} from './hls-bridge/tams-manifest-registry';
+import {SyntheticManifestRegistry} from '../hls/synthetic-manifest-registry';
 import type {TamsMainMediaSession, TamsMainMediaSessionState} from './tams-main-media-session';
 import type {TamsMainMediaState, TamsMediaMetadata} from './tams-main-media';
 import {TamsPlaybackMode} from './tams-playback';
@@ -45,7 +45,7 @@ export class TamsPlayerController extends HlsPlayerController {
       hlsConfig: {
         ...(config?.hlsConfig ?? {}),
         // hls.js types pLoader with PlaylistLoaderContext; our loader uses the generic LoaderContext
-        pLoader: TamsManifestLoader as NonNullable<HlsConfig['pLoader']>,
+        pLoader: SyntheticManifestLoader as NonNullable<HlsConfig['pLoader']>,
         fLoader: createTamsSubtitleLoader(config?.hlsConfig?.fLoader),
       },
     });
@@ -69,7 +69,7 @@ export class TamsPlayerController extends HlsPlayerController {
         TamsSubtitleShiftRegistry.restore(sessionState.textTimestampShifts);
 
         this.revokeThumbnailVttTrackUrl();
-        TamsManifestRegistry.restore(sessionState.manifests);
+        SyntheticManifestRegistry.restore(sessionState.manifests);
         this.trackRepublishedPlaylists(session);
 
         if (!sessionState.hlsLoadOptions) {
@@ -152,7 +152,7 @@ export class TamsPlayerController extends HlsPlayerController {
 
     this._republishedPlaylistsSubscription = session.onSessionStateUpdated$.pipe(takeUntil(this._destroyBreaker.observer)).subscribe((update) => {
       this._sessionState = update.sessionState;
-      TamsManifestRegistry.restore(update.sessionState.manifests);
+      SyntheticManifestRegistry.restore(update.sessionState.manifests);
       TamsSubtitleShiftRegistry.restore(update.sessionState.textTimestampShifts);
     });
   }

@@ -15,6 +15,8 @@
  */
 
 import {OmpError} from '../types';
+import {M3U8PlaylistBuilder, M3U8PlaylistWriter} from '../m3u8/m3u8-playlist-writer';
+import {M3U8Media, M3U8Segment, type M3U8SegmentMap, M3U8StreamInfo} from '../m3u8/m3u8-playlist.model';
 
 export interface DashByteRange {
   offset: number;
@@ -672,10 +674,21 @@ function parsePeriodRenditions(mpd: Element, period: Element, manifestUrl: strin
   return renditions;
 }
 
-/** Stitch pre-authored Periods without introducing another manifest or ad source. */
-export function stitchDashPeriods(manifest: DashManifest, periods: DashPeriod[]): DashManifest {
+/** One HLS track: the first-Period rendition that names it, and the rendition it continues with in each Period. */
+export interface DashTrackPlan {
+  /** First-Period rendition carrying the track's metadata; its bandwidth is the peak across Periods. */
+  head: DashRendition;
+  parts: {period: DashPeriod; rendition: DashRendition}[];
+}
+
+/**
+ * Matches every audio/video track across Periods using MPD metadata alone, so that tracks can be
+ * resolved independently (and lazily) and joined with {@link concatDashTrack}.
+ */
+export function planDashTracks(manifest: DashManifest): DashTrackPlan[] {
+  const periods = manifest.periods ?? [{start: 0, duration: manifest.duration, renditions: manifest.renditions}];
   const first = periods[0]!;
-  const tracks = first.renditions.map((rendition) => ({...rendition, segments: rendition.segments.map((segment) => ({...segment}))}));
+  const plans: DashTrackPlan[] = first.renditions.map((rendition) => ({head: {...rendition}, parts: [{period: first, rendition}]}));
   for (let i = 1; i < periods.length; i++) {
     const period = periods[i]!;
     const video = period.renditions.filter((rendition) => rendition.type === 'video');
@@ -685,7 +698,8 @@ export function stitchDashPeriods(manifest: DashManifest, periods: DashPeriod[])
     if (!!video.length !== first.renditions.some((rendition) => rendition.type === 'video') || audio.length !== firstAudio.length) {
       return fail('Period transitions that add or remove audio/video tracks are not supported');
     }
-    for (const [trackIndex, track] of tracks.entries()) {
+    for (const [trackIndex, plan] of plans.entries()) {
+      const track = plan.head;
       let next: DashRendition | undefined;
       if (track.type === 'video') {
         const compatible = video.filter((rendition) => rendition.codecs.toLowerCase() === track.codecs.toLowerCase());
@@ -712,25 +726,47 @@ export function stitchDashPeriods(manifest: DashManifest, periods: DashPeriod[])
         return fail('Period tracks must have compatible codecs, frame rates, audio layouts and unambiguous track identities');
       }
       if (track.type === 'audio') usedAudio.add(next);
-      // Playlist time must reach the Period boundary even if an AAC tail ends a fraction of a frame early.
-      const previousBoundary = periods.slice(0, i).reduce((total, value) => total + value.duration, 0);
-      const elapsed = track.segments.reduce((total, segment) => total + segment.duration, 0);
-      track.segments.at(-1)!.duration += previousBoundary - elapsed;
-      next.segments.forEach((segment, index) =>
-        track.segments.push(
-          index
-            ? {...segment}
-            : {
-                ...segment,
-                discontinuity: true,
-                initialization: {url: next.initializationUrl, byteRange: next.initializationByteRange},
-              }
-        )
-      );
+      plan.parts.push({period, rendition: next});
       track.bandwidth = Math.max(track.bandwidth, next.bandwidth);
     }
   }
-  const resolved = {...manifest, periods, renditions: tracks};
+  return plans;
+}
+
+/** Joins a track's resolved per-Period renditions (in {@link DashTrackPlan.parts} order) into one. */
+export function concatDashTrack(plan: DashTrackPlan, resolved: DashRendition[]): DashRendition {
+  const track = {...resolved[0]!, bandwidth: plan.head.bandwidth, segments: resolved[0]!.segments.map((segment) => ({...segment}))};
+  let previousBoundary = 0;
+  for (let i = 1; i < resolved.length; i++) {
+    const next = resolved[i]!;
+    previousBoundary += plan.parts[i - 1]!.period.duration;
+    // Playlist time must reach the Period boundary even if an AAC tail ends a fraction of a frame early.
+    const elapsed = track.segments.reduce((total, segment) => total + segment.duration, 0);
+    track.segments.at(-1)!.duration += previousBoundary - elapsed;
+    next.segments.forEach((segment, index) =>
+      track.segments.push(
+        index
+          ? {...segment}
+          : {
+              ...segment,
+              discontinuity: true,
+              initialization: {url: next.initializationUrl, byteRange: next.initializationByteRange},
+            }
+      )
+    );
+  }
+  return track;
+}
+
+/** Stitch pre-authored Periods without introducing another manifest or ad source. */
+export function stitchDashPeriods(manifest: DashManifest, periods: DashPeriod[]): DashManifest {
+  const renditions = planDashTracks({...manifest, periods}).map((plan) =>
+    concatDashTrack(
+      plan,
+      plan.parts.map((part) => part.rendition)
+    )
+  );
+  const resolved = {...manifest, periods, renditions};
   validateDashSegmentAlignment(resolved);
   return resolved;
 }
@@ -738,9 +774,13 @@ export function stitchDashPeriods(manifest: DashManifest, periods: DashPeriod[])
 export function validateDashSegmentAlignment(manifest: DashManifest): void {
   const video = manifest.renditions.filter((rendition) => rendition.type === 'video');
   const reference = video[0]?.segments;
-  if (reference && video.some(({segments}) => segments.length !== reference.length || segments.some((segment, i) => Math.abs(segment.duration - reference[i]!.duration) > 0.001))) {
+  if (reference && video.some(({segments}) => !dashSegmentsAligned(segments, reference))) {
     fail('video representations must have aligned segment boundaries');
   }
+}
+
+export function dashSegmentsAligned(segments: DashSegment[], reference: DashSegment[]): boolean {
+  return segments.length === reference.length && segments.every((segment, i) => Math.abs(segment.duration - reference[i]!.duration) <= 0.001);
 }
 
 export function writeDashMediaPlaylist(rendition: DashRendition): string {
@@ -748,56 +788,35 @@ export function writeDashMediaPlaylist(rendition: DashRendition): string {
     fail('representation contains no resolved playable segments');
   }
   const targetDuration = rendition.segments.reduce((max, segment) => Math.max(max, segment.duration), 1);
-  return [
-    '#EXTM3U',
-    '#EXT-X-VERSION:7',
-    `#EXT-X-TARGETDURATION:${Math.ceil(targetDuration)}`,
-    '#EXT-X-PLAYLIST-TYPE:VOD',
-    '#EXT-X-MEDIA-SEQUENCE:0',
-    `#EXT-X-MAP:URI=${quote(rendition.initializationUrl)}${rendition.initializationByteRange ? `,BYTERANGE="${rendition.initializationByteRange.length}@${rendition.initializationByteRange.offset}"` : ''}`,
-    ...rendition.segments.flatMap((segment) => [
-      ...(segment.discontinuity ? ['#EXT-X-DISCONTINUITY'] : []),
-      ...(segment.initialization
-        ? [
-            `#EXT-X-MAP:URI=${quote(segment.initialization.url)}${segment.initialization.byteRange ? `,BYTERANGE="${segment.initialization.byteRange.length}@${segment.initialization.byteRange.offset}"` : ''}`,
-          ]
-        : []),
-      `#EXTINF:${segment.duration.toFixed(9)},`,
-      ...(segment.byteRange ? [`#EXT-X-BYTERANGE:${segment.byteRange.length}@${segment.byteRange.offset}`] : []),
-      segment.url,
-    ]),
-    '#EXT-X-ENDLIST',
-    '',
-  ].join('\n');
+  const builder = new M3U8PlaylistBuilder().setVersion(7).setTargetDuration(Math.ceil(targetDuration)).setPlaylistType('VOD').setMediaSequence(0).setEndList();
+  let map: M3U8SegmentMap = {uri: rendition.initializationUrl, byteRange: rendition.initializationByteRange};
+  for (const segment of rendition.segments) {
+    if (segment.initialization) {
+      map = {uri: segment.initialization.url, byteRange: segment.initialization.byteRange};
+    }
+    builder.addSegment(new M3U8Segment(segment.duration, segment.url, map, segment.byteRange, segment.discontinuity));
+  }
+  return M3U8PlaylistWriter.write(builder.build());
 }
 
 export function writeDashMasterPlaylist(renditions: DashRendition[], playlistUrls: string[]): string {
   const audio = renditions.filter((rendition) => rendition.type === 'audio');
   const video = renditions.filter((rendition) => rendition.type === 'video');
-  const lines = ['#EXTM3U', '#EXT-X-VERSION:7'];
+  const builder = new M3U8PlaylistBuilder().setVersion(7);
+  const peakAudioBandwidth = audio.reduce((max, track) => Math.max(max, track.bandwidth), 0);
   renditions.forEach((rendition, index) => {
     if (rendition.type === 'audio') {
-      const attributes = [
-        'TYPE=AUDIO',
-        'GROUP-ID="audio"',
-        `NAME=${quote(`${rendition.label} (${index + 1})`)}`,
-        `DEFAULT=${rendition === audio[0] ? 'YES' : 'NO'}`,
-        'AUTOSELECT=YES',
-        `URI=${quote(playlistUrls[index]!)}`,
-      ];
-      if (rendition.language) attributes.push(`LANGUAGE=${quote(rendition.language)}`);
-      if (rendition.channels) attributes.push(`CHANNELS=${quote(rendition.channels)}`);
-      lines.push(`#EXT-X-MEDIA:${attributes.join(',')}`);
+      builder.addMedia(
+        new M3U8Media('AUDIO', 'audio', `${rendition.label} (${index + 1})`, rendition === audio[0], true, rendition.channels ?? null, playlistUrls[index]!, rendition.language ?? null)
+      );
     }
   });
   renditions.forEach((rendition, index) => {
     if (video.length ? rendition.type !== 'video' : rendition !== audio[0]) return;
-    const attributes = [`BANDWIDTH=${rendition.bandwidth + (rendition.type === 'video' ? audio.reduce((max, track) => Math.max(max, track.bandwidth), 0) : 0)}`];
-    attributes.push(`CODECS=${quote([rendition.codecs, ...(rendition.type === 'video' && audio.length ? [audio[0]!.codecs] : [])].join(','))}`);
-    if (rendition.width && rendition.height) attributes.push(`RESOLUTION=${rendition.width}x${rendition.height}`);
-    if (rendition.frameRate) attributes.push(`FRAME-RATE=${rendition.frameRate.toFixed(6)}`);
-    if (audio.length) attributes.push('AUDIO="audio"');
-    lines.push(`#EXT-X-STREAM-INF:${attributes.join(',')}`, playlistUrls[index]!);
+    const bandwidth = rendition.bandwidth + (rendition.type === 'video' ? peakAudioBandwidth : 0);
+    const codecs = [rendition.codecs, ...(rendition.type === 'video' && audio.length ? [audio[0]!.codecs] : [])].join(',');
+    const resolution = rendition.width && rendition.height ? {width: rendition.width, height: rendition.height} : null;
+    builder.addStreamInfo(new M3U8StreamInfo(bandwidth, bandwidth, resolution, rendition.frameRate ?? null, playlistUrls[index]!, codecs));
   });
-  return [...lines, ''].join('\n');
+  return M3U8PlaylistWriter.write(builder.build());
 }

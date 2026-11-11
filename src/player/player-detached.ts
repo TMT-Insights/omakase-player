@@ -588,7 +588,7 @@ export class PlayerDetached implements PlayerDetachedApi, Destroyable {
                 switchMap((track) =>
                   this.loadSidecarTrack(track.id, {
                     trackType: TrackType.TEXT_TRACK,
-                    handlerType: textTrack.imscDocuments?.length && preloadTextTrackHandler === PlayerTextHandlerType.MEDIA_CAPTIONS ? PlayerTextHandlerType.IMSC : preloadTextTrackHandler,
+                    handlerType: PlayerInternalUtil.resolveMainTextTrackHandler(textTrack, preloadTextTrackHandler),
                   }).pipe(
                     tap(() => {
                       if (defaultTextTrack?.id === textTrack.id) {

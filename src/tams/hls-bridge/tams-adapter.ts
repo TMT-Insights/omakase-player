@@ -1,6 +1,6 @@
-import {M3U8PlaylistBuilder, M3U8PlaylistWriter} from './hls-manifest-writer';
-import {M3U8Segment, M3U8StreamInfo, M3U8Media} from './model/m3u8-model';
-import {TamsManifestRegistry} from './tams-manifest-registry';
+import {M3U8PlaylistBuilder, M3U8PlaylistWriter} from '../../m3u8/m3u8-playlist-writer';
+import {M3U8Segment, M3U8StreamInfo, M3U8Media} from '../../m3u8/m3u8-playlist.model';
+import {SyntheticManifestRegistry} from '../../hls/synthetic-manifest-registry';
 import {TAMS_MANIFEST} from '../constants';
 
 export type M3U8ManifestMetadata = {
@@ -104,8 +104,8 @@ export function exportSegmentsToManifest(sources: SegmentsWithMetadata[], master
     const {streamInfo, mediaInfo, id} = sources[i]!;
 
     const subM3U8 = writeMediaPlaylist(sources[i]!);
-    const uri = TamsManifestRegistry.createUrl();
-    TamsManifestRegistry.register(uri, subM3U8);
+    const uri = SyntheticManifestRegistry.createUrl(TAMS_MANIFEST.syntheticHost);
+    SyntheticManifestRegistry.register(uri, subM3U8);
 
     if (streamInfo && !mediaInfo) {
       const stream = new M3U8StreamInfo(streamInfo.bandwidth, streamInfo.averageBandwidth, streamInfo.resolution, streamInfo.frameRate, uri);
@@ -131,8 +131,8 @@ export function exportSegmentsToManifest(sources: SegmentsWithMetadata[], master
 
   const masterPlaylist = masterBuilder.build();
   const masterM3U8 = M3U8PlaylistWriter.write(masterPlaylist);
-  const masterUri = TamsManifestRegistry.createUrl();
-  TamsManifestRegistry.register(masterUri, masterM3U8);
+  const masterUri = SyntheticManifestRegistry.createUrl(TAMS_MANIFEST.syntheticHost);
+  SyntheticManifestRegistry.register(masterUri, masterM3U8);
 
   return {
     url: masterUri,

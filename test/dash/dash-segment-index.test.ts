@@ -119,11 +119,11 @@ describe('DASH index loading', () => {
     expect(new Headers(options?.headers).get('Range')).toBe('bytes=100-167');
     expect(new Headers(options?.headers).get('X-Test')).toBe('test');
     expect(writeDashMediaPlaylist(manifest.renditions[0]!)).toBe(
-      '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n' +
+      '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n' +
         '#EXT-X-MAP:URI="https://example.com/media/video.mp4",BYTERANGE="100@0"\n' +
-        '#EXTINF:2.000000000,\n#EXT-X-BYTERANGE:100@168\nhttps://example.com/media/video.mp4\n' +
-        '#EXTINF:2.000000000,\n#EXT-X-BYTERANGE:200@268\nhttps://example.com/media/video.mp4\n' +
-        '#EXTINF:1.000000000,\n#EXT-X-BYTERANGE:300@468\nhttps://example.com/media/video.mp4\n#EXT-X-ENDLIST\n'
+        '#EXTINF:2,\n#EXT-X-BYTERANGE:100@168\nhttps://example.com/media/video.mp4\n' +
+        '#EXTINF:2,\n#EXT-X-BYTERANGE:200@268\nhttps://example.com/media/video.mp4\n' +
+        '#EXTINF:1,\n#EXT-X-BYTERANGE:300@468\nhttps://example.com/media/video.mp4\n#EXT-X-ENDLIST\n'
     );
   });
 

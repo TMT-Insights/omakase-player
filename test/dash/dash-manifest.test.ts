@@ -27,11 +27,11 @@ describe('DASH to HLS bridge', () => {
       ],
     });
     expect(writeDashMediaPlaylist(manifest.renditions[0]!)).toBe(
-      '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n' +
+      '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n' +
         '#EXT-X-MAP:URI="https://example.com/media/v1/init.mp4"\n' +
-        '#EXTINF:2.000000000,\nhttps://example.com/media/v1/seg-007.m4s\n' +
-        '#EXTINF:2.000000000,\nhttps://example.com/media/v1/seg-008.m4s\n' +
-        '#EXTINF:1.000000000,\nhttps://example.com/media/v1/seg-009.m4s\n#EXT-X-ENDLIST\n'
+        '#EXTINF:2,\nhttps://example.com/media/v1/seg-007.m4s\n' +
+        '#EXTINF:2,\nhttps://example.com/media/v1/seg-008.m4s\n' +
+        '#EXTINF:1,\nhttps://example.com/media/v1/seg-009.m4s\n#EXT-X-ENDLIST\n'
     );
   });
 
@@ -73,9 +73,9 @@ describe('DASH to HLS bridge', () => {
     const manifest = parseDashManifest(mpd(video(template, representation() + representation('v2', 2000000)) + audio('en') + audio('fr')), sourceUrl);
     expect(manifest.renditions.map((rendition) => rendition.id)).toEqual(['v1', 'v2', 'en', 'fr']);
     const master = writeDashMasterPlaylist(manifest.renditions, ['video1.m3u8', 'video2.m3u8', 'en.m3u8', 'fr.m3u8']);
-    expect(master).toContain('TYPE=AUDIO,GROUP-ID="audio",NAME="en (3)",DEFAULT=YES,AUTOSELECT=YES,URI="en.m3u8",LANGUAGE="en",CHANNELS="2"');
+    expect(master).toContain('TYPE=AUDIO,GROUP-ID="audio",NAME="en (3)",DEFAULT=YES,AUTOSELECT=YES,LANGUAGE="en",CHANNELS="2",URI="en.m3u8"');
     expect(master).toContain('TYPE=AUDIO,GROUP-ID="audio",NAME="fr (4)",DEFAULT=NO');
-    expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=1128000,CODECS="avc1.4d401e,mp4a.40.2",RESOLUTION=640x360,FRAME-RATE=29.970030,AUDIO="audio"\nvideo1.m3u8');
+    expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=1128000,AVERAGE-BANDWIDTH=1128000,CODECS="avc1.4d401e,mp4a.40.2",RESOLUTION=640x360,FRAME-RATE=29.97,AUDIO="audio"\nvideo1.m3u8');
     expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=2128000');
   });
 
@@ -83,7 +83,7 @@ describe('DASH to HLS bridge', () => {
     const manifest = parseDashManifest(mpd(`<AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2">${template}<Representation id="a" bandwidth="128000"/></AdaptationSet>`), sourceUrl);
     const master = writeDashMasterPlaylist(manifest.renditions, ['audio.m3u8']);
     expect(master).toContain('#EXT-X-MEDIA:TYPE=AUDIO');
-    expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS="mp4a.40.2",AUDIO="audio"\naudio.m3u8');
+    expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=128000,AVERAGE-BANDWIDTH=128000,CODECS="mp4a.40.2",AUDIO="audio"\naudio.m3u8');
   });
 
   it('inherits audio sampling rates and allows representation overrides', () => {

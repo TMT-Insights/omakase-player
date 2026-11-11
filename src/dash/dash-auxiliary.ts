@@ -11,7 +11,11 @@ import {AuthConfig, FileFormatType} from '../common';
 import {DefaultTextCue, TextTrackFile, ThumbnailTrack, TimedItemTemporalType, type TimedImscDocument} from '../media';
 import {UrlSource} from '../source';
 import {OmpError} from '../types';
-import type {DashByteRange, DashManifest, DashRendition} from './dash-manifest';
+import type {DashByteRange, DashManifest, DashPeriod, DashRendition, DashSegment} from './dash-manifest';
+import {createDashIndexBudget, mapLimit, resolveDashRendition} from './dash-segment-index';
+
+/** Parallel auxiliary tracks, and parallel segment downloads within one. */
+const AUXILIARY_CONCURRENCY = 6;
 import {parseDashTextInitialization, parseDashTextSamples, parseDashWvttSample} from './dash-text-mp4';
 
 interface Cue {
@@ -154,7 +158,6 @@ export function loadDashAuxiliaryTracks(manifest: DashManifest, createResource: 
       }
       return result;
     };
-    const groups = new Map<string, Group>();
     const resource = (group: Group, data: BlobPart[], mime: string) => {
       const url = createResource(data, mime);
       group.resourceUrls.push(url);
@@ -168,7 +171,10 @@ export function loadDashAuxiliaryTracks(manifest: DashManifest, createResource: 
       clipped.text = clipped.text.replace(/<((?:\d{2,}:)?[0-5]\d:[0-5]\d\.\d{3})>/g, (_, time: string) => `<${formatTime(Math.max(0, timestamp(time) + offset))}>`);
       group.cues.push(clipped);
     };
+    const budget = createDashIndexBudget();
     const run = async () => {
+      // Group each track's renditions across Periods before deciding how to load it.
+      const entries = new Map<string, {rendition: DashRendition; parts: {period: DashPeriod; rendition: DashRendition}[]}>();
       for (const period of manifest.auxiliaryPeriods ?? []) {
         const counts = new Map<string, number>();
         for (const rendition of period.renditions) {
@@ -183,100 +189,146 @@ export function loadDashAuxiliaryTracks(manifest: DashManifest, createResource: 
           const key = counts.get(basicKey)! > 1 ? `${basicKey}:${rendition.id}` : basicKey;
           if (seen.has(key)) fail('ambiguous auxiliary rendition identities');
           seen.add(key);
-          let group = groups.get(key);
-          if (!group) {
-            group = {rendition, cues: [], headers: new Set(), documents: [], resourceUrls: []};
-            groups.set(key, group);
-          } else if (group.rendition.auxiliary!.format !== auxiliary.format) fail('auxiliary codec changes between Periods are not supported');
-          const offset = period.start - rendition.presentationTimeOffset;
-          const mp4 =
-            auxiliary.format === 'wvtt' || auxiliary.format === 'stpp'
-              ? parseDashTextInitialization(await fetchResource(rendition.initializationUrl, rendition.initializationByteRange), auxiliary.format)
-              : undefined;
-          const textDocument = (xml: string, start: number, end: number) => {
-            const document = imsc.fromXML(xml);
-            group!.documents.push({url: resource(group!, [xml], 'application/ttml+xml'), start, end, timeOffset: offset});
-            const events = document.getMediaTimeEvents();
-            if (events.length > 100000) fail('more than 100000 TTML timing events');
-            const boundaries = [...new Set([start - offset, ...events.filter((time) => time > start - offset && time < end - offset), end - offset])].sort((a, b) => a - b);
-            for (let i = 0; i + 1 < boundaries.length; i++) {
-              const isd: IsdNode = imsc.generateISD(document, boundaries[i]!);
-              const content = isdText(isd).trim();
-              if (!content) continue;
-              addCue(group!, {start: boundaries[i]!, end: boundaries[i + 1]!, text: content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}, offset, start, end);
-            }
-          };
-          let elapsed = 0;
-          for (const segment of rendition.segments) {
-            const start = period.start + (segment.presentationTime ?? elapsed);
-            const end = Math.min(period.start + period.duration, start + segment.duration);
-            const clipStart = Math.max(period.start, start);
-            elapsed += segment.duration;
-            if (end <= clipStart) continue;
-            const data = await fetchResource(segment.url, segment.byteRange);
-            if (auxiliary.format === 'image') {
-              const {columns, rows} = auxiliary.tiles;
-              if ((columns > 1 || rows > 1) && (!rendition.width || !rendition.height || rendition.width % columns || rendition.height % rows))
-                fail('tiled images require dimensions divisible by the tile grid');
-              const imageUrl = resource(group, [data], auxiliary.mimeType);
-              const tileDuration = (segment.mediaDuration ?? segment.duration) / (columns * rows);
-              for (let tile = 0; tile < columns * rows; tile++) {
-                const xywh =
-                  columns * rows > 1
-                    ? `#xywh=${(tile % columns) * (rendition.width! / columns)},${Math.floor(tile / columns) * (rendition.height! / rows)},${rendition.width! / columns},${rendition.height! / rows}`
-                    : '';
-                addCue(group, {start: start + tile * tileDuration, end: start + (tile + 1) * tileDuration, text: `${imageUrl}${xywh}`}, 0, clipStart, end);
-              }
-            } else if (mp4) {
-              for (const sample of parseDashTextSamples(data, mp4, segment.byteRange?.offset)) {
-                const sampleStart = Math.max(period.start, sample.time + offset);
-                const sampleEnd = Math.min(period.start + period.duration, sample.time + offset + sample.duration);
-                if (sampleEnd <= sampleStart) continue;
-                if (mp4.codec === 'wvtt') {
-                  for (const cue of parseDashWvttSample(sample)) addCue(group, {...cue, start: sample.time, end: sample.time + sample.duration}, offset, sampleStart, sampleEnd);
-                } else textDocument(new TextDecoder('utf-8', {fatal: true}).decode(sample.data), sampleStart, sampleEnd);
-              }
-            } else {
-              const text = new TextDecoder('utf-8', {fatal: true}).decode(data);
-              if (auxiliary.format === 'ttml') textDocument(text, clipStart, end);
-              else {
-                const vtt = parseVtt(text, group);
-                for (const cue of vtt.cues) addCue(group, cue, offset + vtt.offset, clipStart, end);
-              }
-            }
-          }
+          const entry = entries.get(key);
+          if (!entry) entries.set(key, {rendition, parts: [{period, rendition}]});
+          else if (entry.rendition.auxiliary!.format !== auxiliary.format) fail('auxiliary codec changes between Periods are not supported');
+          else entry.parts.push({period, rendition});
         }
       }
-      signal.throwIfAborted();
-      return [...groups.values()].map((group) => {
-        group.cues.sort((a, b) => a.start - b.start || a.end - b.end);
-        const unique = new Set<string>();
-        const cues = group.cues.filter((cue) => {
-          const key = JSON.stringify(cue);
-          if (unique.has(key)) return false;
-          unique.add(key);
-          return true;
-        });
-        const vtt = `WEBVTT\n\n${[...group.headers].map((header) => `${header}\n\n`).join('')}${cues.map((cue) => `${formatTime(cue.start)} --> ${formatTime(cue.end)}${cue.settings ? ` ${cue.settings}` : ''}\n${cue.text}\n\n`).join('')}`;
-        const args = {
-          source: new UrlSource(resource(group, [vtt], 'text/vtt')),
-          sourceFileFormatType: FileFormatType.VTT,
-          label: group.rendition.label,
-          ownedResourceUrls: group.resourceUrls,
-          customAttrs: {dashAuxiliary: true, dashForced: group.rendition.auxiliary!.forced},
-        };
-        if (group.rendition.type === 'image') return new ThumbnailTrack(args);
-        const track = new TextTrackFile({
-          ...args,
-          kind: group.rendition.auxiliary!.kind,
-          srclang: group.rendition.language,
-          default: group.rendition.auxiliary!.default,
-          imscDocuments: group.documents.length ? group.documents : undefined,
-        });
-        track.addTimedItems(cues.map((cue) => new DefaultTextCue({text: cue.text, temporal: {type: TimedItemTemporalType.SPAN, start: cue.start.toString(), end: cue.end.toString()}})));
-        track.areTimedItemsFetched = true;
-        return track;
+
+      const tracks = await mapLimit([...entries.values()], AUXILIARY_CONCURRENCY, async ({rendition: head, parts}) => {
+        const sidecar = directSidecar(head, parts);
+        if (sidecar) return sidecar;
+        const group: Group = {rendition: head, cues: [], headers: new Set(), documents: [], resourceUrls: []};
+        for (const part of parts) await loadPart(group, part.period, part.rendition);
+        return createTrack(group);
       });
+      signal.throwIfAborted();
+      return tracks;
+    };
+
+    /**
+     * A single unshifted sidecar file is handed to the text track as-is: it is fetched and parsed by
+     * the regular text controllers when used, instead of being downloaded and re-encoded here.
+     */
+    const directSidecar = (head: DashRendition, parts: {period: DashPeriod; rendition: DashRendition}[]): TextTrackFile | undefined => {
+      const auxiliary = head.auxiliary!;
+      if ((auxiliary.format !== 'vtt' && auxiliary.format !== 'ttml') || parts.length !== 1) return undefined;
+      const {period, rendition} = parts[0]!;
+      const segment = rendition.segments.length === 1 ? rendition.segments[0]! : undefined;
+      const coversPresentation = period.start === 0 && Math.abs(period.duration - manifest.duration) <= 0.001;
+      if (!segment || segment.byteRange || !coversPresentation || rendition.presentationTimeOffset !== 0 || (segment.presentationTime ?? 0) !== 0) return undefined;
+      return new TextTrackFile({
+        source: new UrlSource(segment.url),
+        sourceFileFormatType: auxiliary.format === 'vtt' ? FileFormatType.VTT : FileFormatType.TTML,
+        label: head.label,
+        kind: auxiliary.kind,
+        srclang: head.language,
+        default: auxiliary.default,
+        customAttrs: {dashAuxiliary: true, dashForced: auxiliary.forced},
+      });
+    };
+
+    const loadPart = async (group: Group, period: DashPeriod, unresolved: DashRendition) => {
+      const auxiliary = unresolved.auxiliary!;
+      // only fragmented MP4 text can carry indexes or implicit initialization
+      const rendition =
+        unresolved.segmentBase || unresolved.discoverInitialization || unresolved.segments.some((segment) => segment.index)
+          ? await resolveDashRendition(unresolved, period.duration, signal, budget)
+          : unresolved;
+      const offset = period.start - rendition.presentationTimeOffset;
+      const mp4 =
+        auxiliary.format === 'wvtt' || auxiliary.format === 'stpp'
+          ? parseDashTextInitialization(await fetchResource(rendition.initializationUrl, rendition.initializationByteRange), auxiliary.format)
+          : undefined;
+      const textDocument = (xml: string, start: number, end: number) => {
+        const document = imsc.fromXML(xml);
+        group.documents.push({url: resource(group, [xml], 'application/ttml+xml'), start, end, timeOffset: offset});
+        const events = document.getMediaTimeEvents();
+        if (events.length > 100000) fail('more than 100000 TTML timing events');
+        const boundaries = [...new Set([start - offset, ...events.filter((time) => time > start - offset && time < end - offset), end - offset])].sort((a, b) => a - b);
+        for (let i = 0; i + 1 < boundaries.length; i++) {
+          const isd: IsdNode = imsc.generateISD(document, boundaries[i]!);
+          const content = isdText(isd).trim();
+          if (!content) continue;
+          addCue(group, {start: boundaries[i]!, end: boundaries[i + 1]!, text: content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}, offset, start, end);
+        }
+      };
+      let elapsed = 0;
+      const timed = rendition.segments.flatMap((segment) => {
+        const start = period.start + (segment.presentationTime ?? elapsed);
+        const end = Math.min(period.start + period.duration, start + segment.duration);
+        const clipStart = Math.max(period.start, start);
+        elapsed += segment.duration;
+        return end > clipStart ? [{segment, start, end, clipStart}] : [];
+      });
+      // Images are referenced by URL; only byte-range sprites, which no URL can address, are downloaded.
+      const download = (segment: DashSegment) => auxiliary.format !== 'image' || !!segment.byteRange;
+      const data = await mapLimit(timed, AUXILIARY_CONCURRENCY, ({segment}) => (download(segment) ? fetchResource(segment.url, segment.byteRange) : Promise.resolve(undefined)));
+      signal.throwIfAborted();
+      timed.forEach(({segment, start, end, clipStart}, index) => {
+        const bytes = data[index];
+        if (auxiliary.format === 'image') {
+          const {columns, rows} = auxiliary.tiles;
+          if ((columns > 1 || rows > 1) && (!rendition.width || !rendition.height || rendition.width % columns || rendition.height % rows))
+            fail('tiled images require dimensions divisible by the tile grid');
+          const imageUrl = bytes ? resource(group, [bytes], auxiliary.mimeType) : segment.url;
+          const tileDuration = (segment.mediaDuration ?? segment.duration) / (columns * rows);
+          for (let tile = 0; tile < columns * rows; tile++) {
+            const xywh =
+              columns * rows > 1
+                ? `#xywh=${(tile % columns) * (rendition.width! / columns)},${Math.floor(tile / columns) * (rendition.height! / rows)},${rendition.width! / columns},${rendition.height! / rows}`
+                : '';
+            addCue(group, {start: start + tile * tileDuration, end: start + (tile + 1) * tileDuration, text: `${imageUrl}${xywh}`}, 0, clipStart, end);
+          }
+        } else if (mp4) {
+          for (const sample of parseDashTextSamples(bytes!, mp4, segment.byteRange?.offset)) {
+            const sampleStart = Math.max(period.start, sample.time + offset);
+            const sampleEnd = Math.min(period.start + period.duration, sample.time + offset + sample.duration);
+            if (sampleEnd <= sampleStart) continue;
+            if (mp4.codec === 'wvtt') {
+              for (const cue of parseDashWvttSample(sample)) addCue(group, {...cue, start: sample.time, end: sample.time + sample.duration}, offset, sampleStart, sampleEnd);
+            } else textDocument(new TextDecoder('utf-8', {fatal: true}).decode(sample.data), sampleStart, sampleEnd);
+          }
+        } else {
+          const text = new TextDecoder('utf-8', {fatal: true}).decode(bytes!);
+          if (auxiliary.format === 'ttml') textDocument(text, clipStart, end);
+          else {
+            const vtt = parseVtt(text, group);
+            for (const cue of vtt.cues) addCue(group, cue, offset + vtt.offset, clipStart, end);
+          }
+        }
+      });
+    };
+
+    const createTrack = (group: Group): TextTrackFile | ThumbnailTrack => {
+      group.cues.sort((a, b) => a.start - b.start || a.end - b.end);
+      const unique = new Set<string>();
+      const cues = group.cues.filter((cue) => {
+        const key = JSON.stringify(cue);
+        if (unique.has(key)) return false;
+        unique.add(key);
+        return true;
+      });
+      const vtt = `WEBVTT\n\n${[...group.headers].map((header) => `${header}\n\n`).join('')}${cues.map((cue) => `${formatTime(cue.start)} --> ${formatTime(cue.end)}${cue.settings ? ` ${cue.settings}` : ''}\n${cue.text}\n\n`).join('')}`;
+      const args = {
+        source: new UrlSource(resource(group, [vtt], 'text/vtt')),
+        sourceFileFormatType: FileFormatType.VTT,
+        label: group.rendition.label,
+        ownedResourceUrls: group.resourceUrls,
+        customAttrs: {dashAuxiliary: true, dashForced: group.rendition.auxiliary!.forced},
+      };
+      if (group.rendition.type === 'image') return new ThumbnailTrack(args);
+      const track = new TextTrackFile({
+        ...args,
+        kind: group.rendition.auxiliary!.kind,
+        srclang: group.rendition.language,
+        default: group.rendition.auxiliary!.default,
+        imscDocuments: group.documents.length ? group.documents : undefined,
+      });
+      track.addTimedItems(cues.map((cue) => new DefaultTextCue({text: cue.text, temporal: {type: TimedItemTemporalType.SPAN, start: cue.start.toString(), end: cue.end.toString()}})));
+      track.areTimedItemsFetched = true;
+      return track;
     };
     run().then(
       (tracks) => {

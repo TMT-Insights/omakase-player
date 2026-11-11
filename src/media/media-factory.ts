@@ -117,6 +117,7 @@ export class MediaFactory {
       case MainMediaType.TAMS:
         return new TamsMainMediaSessionController(mainMedia as TamsMainMedia, trackRepository);
       case MainMediaType.HLS:
+      case MainMediaType.DASH: // DASH plays as synthetic HLS
         return new HlsMainMediaSessionController(mainMedia, trackRepository);
       default:
         return undefined;
