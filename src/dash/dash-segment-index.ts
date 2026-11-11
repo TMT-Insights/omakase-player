@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-import {forkJoin, from, map, of, type Observable} from 'rxjs';
-import {fromFetch} from 'rxjs/fetch';
+import {Observable} from 'rxjs';
 import {AuthConfig} from '../common/authentication';
 import {OmpError} from '../types';
-import {type DashByteRange, type DashManifest, type DashRendition, type DashSegment, validateDashSegmentAlignment} from './dash-manifest';
+import {type DashByteRange, type DashIndexSource, type DashManifest, type DashRendition, type DashSegment, stitchDashPeriods, validateDashSegmentAlignment} from './dash-manifest';
 
 const MAX_INDEX_BYTES = 16 * 1024 * 1024;
 
@@ -61,12 +60,13 @@ function safeInteger(value: number, name: string): number {
   return value;
 }
 
-/** Resolves direct SIDX references into absolute media-file byte ranges. */
-export function parseDashSegmentIndex(data: ArrayBuffer, rendition: DashRendition, periodDuration: number): DashSegment[] {
-  const addressing = rendition.segmentBase;
-  if (!addressing) {
-    return fail('SegmentBase addressing is required for SIDX');
-  }
+interface SidxReference {
+  byteRange: DashByteRange;
+  duration: number;
+  hierarchical: boolean;
+}
+
+function readSidx(data: ArrayBuffer, absoluteOffset: number): {earliestTime: number; references: SidxReference[]} {
   const view = new DataView(data);
   const uint64 = (offset: number) => safeInteger(view.getUint32(offset) * 2 ** 32 + view.getUint32(offset + 4), '64-bit value');
   let boxStart = 0;
@@ -111,98 +111,331 @@ export function parseDashSegmentIndex(data: ArrayBuffer, rendition: DashRenditio
     }
     const earliestTime = version === 0 ? view.getUint32(payload + 12) : uint64(payload + 12);
     const firstOffset = version === 0 ? view.getUint32(payload + 16) : uint64(payload + 20);
-    // SIDX reports presentation time, not decode time. B-frame composition offsets can
-    // put the first PTS after PTO even when the fragment's tfdt starts exactly at PTO.
-    // hls.js derives the playback origin from the actual fragment timestamps.
-    if (earliestTime / timescale < rendition.presentationTimeOffset - 0.001) {
-      return fail('SIDX begins before presentationTimeOffset; leading trims are not supported');
-    }
     const referenceCount = view.getUint16(countOffset);
     const referencesStart = countOffset + 2;
     if (!referenceCount || referencesStart + referenceCount * 12 > boxEnd) {
       return fail('empty or truncated SIDX references');
     }
 
-    let byteOffset = safeInteger(addressing.indexRange.offset + boxEnd + firstOffset, 'first byte offset');
+    let byteOffset = safeInteger(absoluteOffset + boxEnd + firstOffset, 'first byte offset');
     let elapsedTicks = 0;
-    const segments: DashSegment[] = [];
+    const references: SidxReference[] = [];
     for (let i = 0; i < referenceCount; i++) {
       const position = referencesStart + i * 12;
       const reference = view.getUint32(position);
-      if (reference >>> 31) {
-        return fail('hierarchical SIDX references are not supported');
-      }
       const length = reference & 0x7fffffff;
       const ticks = view.getUint32(position + 4);
       if (!length || !ticks) {
         return fail('invalid SIDX reference size or duration');
       }
       const segmentDuration = ticks / timescale;
-      const elapsed = elapsedTicks / timescale;
       const nextByteOffset = safeInteger(byteOffset + length, 'segment end');
-      if (elapsed < periodDuration) {
-        segments.push({
-          url: addressing.mediaUrl,
-          duration: Math.min(segmentDuration, periodDuration - elapsed),
-          byteRange: {offset: byteOffset, length},
-        });
-      }
+      references.push({duration: segmentDuration, byteRange: {offset: byteOffset, length}, hierarchical: !!(reference >>> 31)});
       elapsedTicks += ticks;
+      safeInteger(elapsedTicks, 'duration');
       byteOffset = nextByteOffset;
     }
-    const coverageTolerance = rendition.type === 'audio' && rendition.codecs === 'mp4a.40.2' && rendition.audioSamplingRate ? Math.max(0.001, 1024 / rendition.audioSamplingRate) : 0.001;
-    if (elapsedTicks / timescale < periodDuration - coverageTolerance) {
-      return fail('SIDX does not cover the Period duration');
-    }
-    return segments;
+    return {earliestTime: earliestTime / timescale, references};
   }
   return fail('SegmentBase indexRange contains no SIDX box');
 }
 
-export function resolveDashSegmentIndexes(manifest: DashManifest): Observable<DashManifest> {
-  return forkJoin(
-    manifest.renditions.map((rendition) => {
-      if (!rendition.segmentBase) {
-        return of(rendition);
+function clipSegments(segments: DashSegment[], rendition: DashRendition, periodDuration: number): DashSegment[] {
+  const tolerance = rendition.type === 'audio' && rendition.codecs === 'mp4a.40.2' && rendition.audioSamplingRate ? Math.max(0.001, 1024 / rendition.audioSamplingRate) : 0.001;
+  let elapsed = 0;
+  const clipped = segments.flatMap((segment) => {
+    const start = rendition.auxiliary ? (segment.presentationTime ?? elapsed) : elapsed;
+    const duration = Math.min(segment.duration, periodDuration - start);
+    elapsed += segment.duration;
+    return duration > 0 ? [{...segment, duration}] : [];
+  });
+  if (!rendition.auxiliary && elapsed < periodDuration - tolerance) {
+    return fail('SIDX does not cover the Period duration');
+  }
+  return clipped;
+}
+
+/** Resolves direct SIDX references; the asynchronous resolver also follows nested indexes. */
+export function parseDashSegmentIndex(data: ArrayBuffer, rendition: DashRendition, periodDuration: number): DashSegment[] {
+  if (!rendition.segmentBase) {
+    return fail('SegmentBase addressing is required for SIDX');
+  }
+  const index = readSidx(data, rendition.segmentBase.indexRange?.offset ?? 0);
+  if (!rendition.auxiliary && index.earliestTime < rendition.presentationTimeOffset - 0.001) {
+    return fail('SIDX begins before presentationTimeOffset; leading trims are not supported');
+  }
+  let time = index.earliestTime;
+  return clipSegments(
+    index.references.map((reference) => {
+      if (reference.hierarchical) {
+        return fail('hierarchical SIDX requires asynchronous index resolution');
       }
-      const {mediaUrl, indexRange} = rendition.segmentBase;
-      if (indexRange.length > MAX_INDEX_BYTES) {
-        return fail(`SIDX indexRange exceeds ${MAX_INDEX_BYTES} bytes`);
-      }
-      const end = safeInteger(indexRange.offset + indexRange.length - 1, 'index range end');
-      const request = AuthConfig.createRequestInit(mediaUrl, AuthConfig.authentication);
-      const headers = new Headers(request.headers);
-      headers.set('Range', `bytes=${indexRange.offset}-${end}`);
-      return fromFetch(mediaUrl, {
-        ...request,
-        headers,
-        selector: (response) => {
-          if (!response.ok) {
-            return fail(`HTTP ${response.status} ${response.statusText} for SIDX ${mediaUrl}`);
-          }
-          if (response.status !== 200 && response.status !== 206) {
-            return fail(`unexpected HTTP ${response.status} for SIDX`);
-          }
-          const contentRange = response.headers.get('Content-Range');
-          if (response.status === 206 && contentRange && !new RegExp(`^bytes ${indexRange.offset}-${end}/(?:\\d+|\\*)$`, 'i').test(contentRange)) {
-            return fail('unexpected SIDX Content-Range');
-          }
-          return from(response.status === 200 ? readFullResponseIndex(response, indexRange) : response.arrayBuffer()).pipe(
-            map((data) => {
-              if (data.byteLength !== indexRange.length) {
-                return fail('truncated or oversized SIDX range response');
-              }
-              return {...rendition, segments: parseDashSegmentIndex(data, rendition, manifest.duration)};
-            })
-          );
-        },
-      });
-    })
-  ).pipe(
-    map((renditions) => {
-      const resolved = {...manifest, renditions};
-      validateDashSegmentAlignment(resolved);
-      return resolved;
-    })
+      const segment = {
+        url: rendition.segmentBase!.mediaUrl,
+        duration: reference.duration,
+        byteRange: reference.byteRange,
+        ...(rendition.auxiliary ? {presentationTime: time - rendition.presentationTimeOffset} : {}),
+      };
+      time += reference.duration;
+      return segment;
+    }),
+    rendition,
+    periodDuration
   );
+}
+
+interface IndexBudget {
+  bytes: number;
+  requests: number;
+  segments: number;
+}
+
+async function fetchIndex(source: DashIndexSource, signal: AbortSignal, budget: IndexBudget): Promise<{data: ArrayBuffer; total?: number}> {
+  signal.throwIfAborted();
+  if (++budget.requests > 2048) {
+    return fail('too many index requests');
+  }
+  const range = source.range;
+  if (range && range.length > MAX_INDEX_BYTES) {
+    return fail(`SIDX indexRange exceeds ${MAX_INDEX_BYTES} bytes`);
+  }
+  const request = AuthConfig.createRequestInit(source.url, AuthConfig.authentication);
+  const headers = new Headers(request.headers);
+  if (range) {
+    headers.set('Range', `bytes=${range.offset}-${safeInteger(range.offset + range.length - 1, 'index range end')}`);
+  }
+  const response = await fetch(source.url, {...request, headers, signal});
+  if (!response.ok) {
+    return fail(`HTTP ${response.status} ${response.statusText} for SIDX ${source.url}`);
+  }
+  if (response.status !== 200 && response.status !== 206) {
+    return fail(`unexpected HTTP ${response.status} for SIDX`);
+  }
+  const contentRange = response.headers.get('Content-Range');
+  if (range && response.status === 206 && contentRange && !new RegExp(`^bytes ${range.offset}-${range.offset + range.length - 1}/(?:\\d+|\\*)$`, 'i').test(contentRange)) {
+    return fail('unexpected SIDX Content-Range');
+  }
+  const total = response.status === 200 ? Number(response.headers.get('Content-Length')) || undefined : Number(contentRange?.split('/')[1]) || undefined;
+  let data: ArrayBuffer;
+  if (range && response.status === 200) {
+    data = await readFullResponseIndex(response, range);
+  } else {
+    if (!response.body) {
+      return fail('empty SIDX response');
+    }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        length += value.byteLength;
+        if (length > (range?.length ?? MAX_INDEX_BYTES)) {
+          return fail('truncated or oversized SIDX range response');
+        }
+        chunks.push(value);
+      }
+      const buffer = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        buffer.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      data = buffer.buffer;
+    } finally {
+      await reader.cancel();
+      reader.releaseLock();
+    }
+  }
+  if (range && data.byteLength !== range.length) {
+    return fail('truncated or oversized SIDX range response');
+  }
+  budget.bytes += data.byteLength;
+  if (budget.bytes > 64 * 1024 * 1024) {
+    return fail('combined SIDX data exceeds 64 MiB');
+  }
+  return {data, ...(total === undefined ? {} : {total})};
+}
+
+async function resolveIndex(
+  source: DashIndexSource,
+  rendition: DashRendition,
+  mediaUrl: string,
+  duration: number,
+  signal: AbortSignal,
+  budget: IndexBudget,
+  depth = 0,
+  expectedTime?: number
+): Promise<DashSegment[]> {
+  if (depth > 8) {
+    return fail('SIDX nesting exceeds 8 levels');
+  }
+  const {data} = await fetchIndex(source, signal, budget);
+  const index = readSidx(data, source.range?.offset ?? 0);
+  if (expectedTime !== undefined && Math.abs(index.earliestTime - expectedTime) > 0.001) {
+    return fail('nested SIDX timestamps do not match the parent index');
+  }
+  if (depth && Math.abs(index.references.reduce((total, reference) => total + reference.duration, 0) - duration) > 0.001) {
+    return fail('nested SIDX duration does not match the parent index');
+  }
+  if (depth === 0 && !rendition.auxiliary && index.earliestTime < rendition.presentationTimeOffset - 0.001) {
+    return fail('SIDX begins before presentationTimeOffset; leading trims are not supported');
+  }
+  const segments: DashSegment[] = [];
+  let time = index.earliestTime;
+  for (const reference of index.references) {
+    if (reference.hierarchical) {
+      const nested = await resolveIndex({url: source.url, range: reference.byteRange}, rendition, mediaUrl, reference.duration, signal, budget, depth + 1, time);
+      for (const segment of nested) segments.push(segment);
+    } else {
+      if (++budget.segments > 100000) {
+        return fail('more than 100000 indexed segments are not supported');
+      }
+      segments.push({
+        url: mediaUrl,
+        byteRange: reference.byteRange,
+        duration: reference.duration,
+        ...(rendition.auxiliary ? {presentationTime: time - rendition.presentationTimeOffset} : {}),
+      });
+    }
+    time += reference.duration;
+  }
+  return depth ? segments : clipSegments(segments, rendition, duration);
+}
+
+async function discoverBoxes(
+  url: string,
+  signal: AbortSignal,
+  budget: IndexBudget,
+  needIndex: boolean,
+  needInitialization = true
+): Promise<{initialization?: DashByteRange; index?: DashByteRange; media?: DashByteRange}> {
+  let offset = 0;
+  let initialization: DashByteRange | undefined;
+  let index: DashByteRange | undefined;
+  for (let count = 0; count < 1024; count++) {
+    const {data, total} = await fetchIndex({url, range: {offset, length: 16}}, signal, budget);
+    const view = new DataView(data);
+    const type = String.fromCharCode(...new Uint8Array(data, 4, 4));
+    let size = view.getUint32(0);
+    const header = size === 1 ? 16 : 8;
+    if (size === 1) size = safeInteger(view.getUint32(8) * 2 ** 32 + view.getUint32(12), 'box size');
+    if (size === 0 && total !== undefined) size = total - offset;
+    if (size < header) return fail('invalid MP4 box during initialization/index discovery');
+    const end = safeInteger(offset + size, 'box end');
+    if (total !== undefined && end > total) return fail('truncated MP4 box');
+    if (type === 'moov') {
+      if (end > MAX_INDEX_BYTES) return fail('discovered MP4 initialization exceeds 16 MiB');
+      initialization = {offset: 0, length: end};
+    }
+    if (type === 'sidx') index = {offset, length: size};
+    if ((!needInitialization || initialization) && (!needIndex || index)) return {...(initialization ? {initialization} : {}), ...(index ? {index} : {})};
+    if (type === 'moof') {
+      if (needInitialization && !initialization) return fail('fragmented MP4 requires moov before moof');
+      if (total === undefined) return fail('implicit unindexed MP4 requires a known file size');
+      if (total - offset > 64 * 1024 * 1024) return fail('implicit unindexed MP4 exceeds the 64 MiB single-segment limit; provide SIDX or explicit segments');
+      return {...(initialization ? {initialization} : {}), media: {offset, length: total - offset}};
+    }
+    if (type === 'mdat') return fail('implicit addressing requires fragmented MP4, not progressive MP4');
+    offset = end;
+  }
+  return fail('MP4 initialization/index discovery exceeds 1024 boxes');
+}
+
+async function resolveRendition(rendition: DashRendition, duration: number, signal: AbortSignal, budget: IndexBudget): Promise<DashRendition> {
+  let resolved = {...rendition};
+  const addressing = rendition.segmentBase;
+  if (addressing) {
+    let source: DashIndexSource = {url: addressing.indexUrl ?? addressing.mediaUrl, range: addressing.indexRange};
+    if ((!source.range && !addressing.indexUrl) || rendition.discoverInitialization) {
+      const boxes = await discoverBoxes(addressing.mediaUrl, signal, budget, !source.range && !addressing.indexUrl, !!rendition.discoverInitialization);
+      if (rendition.discoverInitialization) {
+        if (!boxes.initialization) return fail('MP4 initialization could not be discovered');
+        resolved.initializationByteRange = boxes.initialization;
+        delete resolved.discoverInitialization;
+      }
+      if (!source.range && !addressing.indexUrl) {
+        if (boxes.media) {
+          resolved.segments = [{url: addressing.mediaUrl, duration, byteRange: boxes.media}];
+          return resolved;
+        }
+        source = {url: addressing.mediaUrl, range: boxes.index};
+      }
+    }
+    resolved.segments = await resolveIndex(source, rendition, addressing.mediaUrl, duration, signal, budget);
+  } else {
+    if (rendition.discoverInitialization) {
+      const boxes = await discoverBoxes(rendition.initializationUrl, signal, budget, false);
+      if (!boxes.initialization) return fail('MP4 initialization could not be discovered');
+      resolved.initializationByteRange = boxes.initialization;
+      delete resolved.discoverInitialization;
+    }
+    const segments: DashSegment[] = [];
+    for (const segment of rendition.segments) {
+      if (segment.index) {
+        const segmentStart = segment.presentationTime ?? 0;
+        const indexed = await resolveIndex(
+          segment.index,
+          {...rendition, presentationTimeOffset: rendition.auxiliary ? rendition.presentationTimeOffset + segmentStart : 0},
+          segment.url,
+          segment.duration,
+          signal,
+          budget
+        );
+        const range = segment.byteRange;
+        if (
+          range &&
+          indexed.some((subsegment) => !subsegment.byteRange || subsegment.byteRange.offset < range.offset || subsegment.byteRange.offset + subsegment.byteRange.length > range.offset + range.length)
+        ) {
+          return fail('indexed subsegments exceed SegmentURL@mediaRange');
+        }
+        for (const subsegment of indexed) {
+          segments.push(rendition.auxiliary ? {...subsegment, presentationTime: segmentStart + (subsegment.presentationTime ?? 0)} : subsegment);
+        }
+      } else {
+        segments.push(segment);
+      }
+    }
+    resolved.segments = segments;
+  }
+  return resolved;
+}
+
+export function resolveDashSegmentIndexes(manifest: DashManifest): Observable<DashManifest> {
+  return new Observable((subscriber) => {
+    const controller = new AbortController();
+    const budget = {bytes: 0, requests: 0, segments: 0};
+    const resolvePeriod = async (period: {duration: number; renditions: DashRendition[]}) => {
+      const renditions: DashRendition[] = [];
+      for (const rendition of period.renditions) {
+        renditions.push(await resolveRendition(rendition, period.duration, controller.signal, budget));
+      }
+      validateDashSegmentAlignment({duration: period.duration, renditions});
+      return renditions;
+    };
+    const run = async () => {
+      const auxiliaryPeriods = [];
+      for (const period of manifest.auxiliaryPeriods ?? []) {
+        auxiliaryPeriods.push({...period, renditions: await resolvePeriod(period)});
+      }
+      const withAuxiliary = auxiliaryPeriods.length ? {...manifest, auxiliaryPeriods} : manifest;
+      if (manifest.periods) {
+        const periods = [];
+        for (const period of manifest.periods) {
+          periods.push({...period, renditions: await resolvePeriod(period)});
+        }
+        return stitchDashPeriods(withAuxiliary, periods);
+      }
+      return {...withAuxiliary, renditions: await resolvePeriod(manifest)};
+    };
+    run().then(
+      (resolved) => {
+        subscriber.next(resolved);
+        subscriber.complete();
+      },
+      (error: unknown) => subscriber.error(error)
+    );
+    return () => controller.abort();
+  });
 }

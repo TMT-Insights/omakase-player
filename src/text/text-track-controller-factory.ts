@@ -22,6 +22,7 @@ import {MediaCaptionsTextTrackController} from './media-captions-text-track-cont
 import {Validators} from '../common/validators';
 import {SourceUtil} from '../source';
 import {ImscTextTrackController} from './imsc-text-track-controller';
+import {SegmentedImscTextTrackController} from './segmented-imsc-text-track-controller';
 
 export class TextTrackControllerFactory {
   static create(trackState: TrackState, playerController: PlayerController, loadOptions?: PlayerTextTrackLoadOptions): TextTrackController {
@@ -45,7 +46,9 @@ export class TextTrackControllerFactory {
       case PlayerTextHandlerType.MEDIA_CAPTIONS:
         return new MediaCaptionsTextTrackController(trackState as TextTrackState, playerController, loadOptions);
       case PlayerTextHandlerType.IMSC:
-        return new ImscTextTrackController(trackState as TextTrackState, playerController, loadOptions);
+        return textTrackState.imscDocuments?.length
+          ? new SegmentedImscTextTrackController(textTrackState, playerController, loadOptions)
+          : new ImscTextTrackController(textTrackState, playerController, loadOptions);
       default:
         throw new Error(`Unknown handler type: ${handlerType}`);
     }
@@ -58,6 +61,8 @@ export class TextTrackControllerFactory {
       return Validators.playerTextHandlerType()(loadOptions.handlerType);
     } else if (loadOptions?.fileFormatType) {
       return this.resolveFromFileFormatType(loadOptions.fileFormatType);
+    } else if (textTrackState.imscDocuments?.length) {
+      return PlayerTextHandlerType.IMSC;
     } else if (textTrackState.sourceFileFormatType) {
       return this.resolveFromFileFormatType(textTrackState.sourceFileFormatType);
     } else {

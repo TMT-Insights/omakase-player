@@ -120,11 +120,8 @@ describe('DASH to HLS bridge', () => {
   });
 
   it.each([
-    ['missing index', '<SegmentBase><Initialization range="0-99"/></SegmentBase>', /indexRange/],
-    ['missing initialization', '<SegmentBase indexRange="100-167"/>', /Initialization/],
     ['unbounded initialization', '<SegmentBase indexRange="100-167"><Initialization/></SegmentBase>', /range or sourceURL/],
     ['invalid initialization range', '<SegmentBase indexRange="100-167"><Initialization range="100-99"/></SegmentBase>', /Initialization/],
-    ['external representation index', '<SegmentBase indexRange="100-167"><Initialization range="0-99"/><RepresentationIndex sourceURL="index.mp4"/></SegmentBase>', /RepresentationIndex/],
     ['mixed addressing', template + '<SegmentBase indexRange="100-167"><Initialization range="0-99"/></SegmentBase>', /mixed/],
   ])('explicitly rejects SegmentBase with %s', (_name, addressing, error) => {
     expect(() => parseDashManifest(mpd(video(addressing)), sourceUrl)).toThrow(error);
@@ -134,10 +131,7 @@ describe('DASH to HLS bridge', () => {
     ['malformed XML', '<MPD>', /invalid MPD/],
     ['dynamic MPD', mpd(video(), 'type="dynamic"'), /live\/dynamic/],
     ['DRM', mpd(video().replace(template, '<ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011"/>' + template)), /ContentProtection/],
-    ['multiple periods', mpd().replace('</MPD>', '<Period/></MPD>'), /multiple Period/],
-    ['nonzero period start', mpd().replace('<Period>', '<Period start="PT1S">'), /starting at zero/],
     ['missing duration', mpd().replace('mediaPresentationDuration="PT5S"', ''), /duration is required/],
-    ['SegmentBase', mpd(video('<SegmentBase/>')), /SegmentBase/],
     ['SegmentList', mpd(video('<SegmentList/>')), /SegmentList/],
     ['subtitles', mpd(video().replace('video/mp4', 'application/mp4')), /unsupported mimeType/],
     ['WebM', mpd(video().replace('video/mp4', 'video/webm')), /unsupported mimeType/],

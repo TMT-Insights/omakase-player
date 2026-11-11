@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {firstValueFrom, of, Subject, throwError} from 'rxjs';
+import {firstValueFrom, map, of, Subject, throwError} from 'rxjs';
+import type {Track} from '../../src/media';
+import {TextTrackFile, ThumbnailTrack} from '../../src/media';
+import {UrlSource} from '../../src/source';
+import {DashMainMedia} from '../../src/dash/dash-main-media';
 import type {LoadMainMediaArgsType, PlayerDomController} from '../../src/player/player-controller-api';
 
 const {loadHls, destroyHls, configureHls} = vi.hoisted(() => ({loadHls: vi.fn(), destroyHls: vi.fn(), configureHls: vi.fn()}));
@@ -130,6 +134,23 @@ describe('DashPlayerController', () => {
     expect(configureHls).toHaveBeenCalledWith(expect.anything(), {hlsConfig: {fLoader: expect.any(Function)}});
   });
 
+  it('loads one MPD containing content/ad/content Periods into one HLS session', async () => {
+    const period = xml.slice(xml.indexOf('<Period>'), xml.indexOf('</Period>') + '</Period>'.length).replace('<Period>', '<Period duration="PT4S">');
+    fetchMock.mockResolvedValue(new Response(`<MPD mediaPresentationDuration="PT12S">${period}${period}${period}</MPD>`));
+    await expect(firstValueFrom(controller.loadMainMedia(args))).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(loadHls).toHaveBeenCalledOnce();
+    expect(loadHls).toHaveBeenCalledWith(expect.objectContaining({loadOptions: {...args.loadOptions, duration: 12}}));
+    const playlist = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blobs[0]!);
+    });
+    expect(playlist.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(2);
+    expect(playlist.match(/#EXT-X-MAP/g)).toHaveLength(3);
+  });
+
   it('surfaces index errors without invoking HLS or creating playlists', async () => {
     const segmentBaseXml = xml.replace(
       '<SegmentTemplate duration="2" initialization="init.mp4" media="$Number$.m4s"/>',
@@ -242,6 +263,64 @@ describe('DashPlayerController', () => {
     const subscription = controller.loadMainMedia(args).subscribe();
     await vi.waitFor(() => expect(loadHls).toHaveBeenCalledOnce());
     subscription.unsubscribe();
+    expect(revoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps auxiliary resources alive across controller destruction until their owning tracks are removed', async () => {
+    const auxiliaryXml = xml.replace(
+      '</Period>',
+      `<AdaptationSet mimeType="text/vtt" lang="en"><BaseURL>en.vtt</BaseURL><Representation id="en"/></AdaptationSet>
+      <AdaptationSet mimeType="image/jpeg"><BaseURL>thumbnail.jpg</BaseURL><Representation id="images"/></AdaptationSet></Period>`
+    );
+    fetchMock
+      .mockResolvedValueOnce(new Response(auxiliaryXml))
+      .mockResolvedValueOnce(new Response('WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello'))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3])));
+    const tracksCreatedHook = vi.fn((_tracks: Track[]) => of(void 0));
+    loadHls.mockImplementation((hlsArgs: LoadMainMediaArgsType) => hlsArgs.tracksCreatedHook([]).pipe(map(() => true)));
+    await firstValueFrom(controller.loadMainMedia({...args, tracksCreatedHook}));
+    expect(tracksCreatedHook).toHaveBeenCalledOnce();
+    expect(tracksCreatedHook.mock.calls[0]![0]).toMatchObject([{trackType: 'TEXT_TRACK', srclang: 'en'}, {trackType: 'THUMBNAIL_TRACK'}]);
+    expect(blobs).toHaveLength(5);
+    controller.destroy();
+    expect(revoke).toHaveBeenCalledTimes(2);
+    tracksCreatedHook.mock.calls[0]![0].forEach((track) => {
+      if (track instanceof TextTrackFile || track instanceof ThumbnailTrack) track.destroy();
+    });
+    expect(revoke).toHaveBeenCalledTimes(5);
+  });
+
+  it('reuses track-owned resources when restoring a detached main-media session', async () => {
+    const auxiliaryXml = xml.replace('</Period>', '<AdaptationSet mimeType="text/vtt"><BaseURL>en.vtt</BaseURL><Representation/></AdaptationSet></Period>');
+    fetchMock.mockResolvedValue(new Response(auxiliaryXml));
+    const providedMainMedia = new DashMainMedia({
+      source: new UrlSource(args.url!),
+      tracks: [new TextTrackFile({source: new UrlSource('blob:persistent-text'), customAttrs: {dashAuxiliary: true}})],
+    }).state;
+    await firstValueFrom(controller.loadMainMedia({...args, providedMainMedia}));
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(blobs).toHaveLength(2);
+    expect(loadHls.mock.calls[0]![0].tracksCreatedHook).toBe(args.tracksCreatedHook);
+  });
+
+  it('surfaces auxiliary load errors and releases generated playlists', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(xml.replace('</Period>', '<AdaptationSet mimeType="text/vtt"><BaseURL>en.vtt</BaseURL><Representation/></AdaptationSet></Period>')))
+      .mockResolvedValueOnce(new Response('', {status: 404}));
+    await expect(firstValueFrom(controller.loadMainMedia(args))).rejects.toThrow('HTTP 404');
+    expect(loadHls).not.toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('aborts auxiliary loading and revokes its playlists when cancelled', async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response(xml.replace('</Period>', '<AdaptationSet mimeType="text/vtt"><BaseURL>en.vtt</BaseURL><Representation/></AdaptationSet></Period>')))
+      .mockImplementationOnce(() => new Promise<Response>(() => {}));
+    const subscription = controller.loadMainMedia(args).subscribe();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    subscription.unsubscribe();
+    expect(fetchMock.mock.calls[1]![1]!.signal!.aborted).toBe(true);
+    expect(loadHls).not.toHaveBeenCalled();
     expect(revoke).toHaveBeenCalledTimes(2);
   });
 });

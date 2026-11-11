@@ -199,7 +199,7 @@ describe('DASH index loading', () => {
     const manifest = parseDashManifest(xml.replace('100-167', '100-99999999'), sourceUrl);
     const fetchMock = vi.fn<typeof fetch>();
     vi.stubGlobal('fetch', fetchMock);
-    expect(() => resolveDashSegmentIndexes(manifest)).toThrow(/exceeds/);
+    await expect(firstValueFrom(resolveDashSegmentIndexes(manifest))).rejects.toThrow(/exceeds/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

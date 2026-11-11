@@ -167,7 +167,7 @@ export class ImscTextTrackController extends BaseTextTrackController {
         .subscribe((event) => {
           let currentTime = event.data.currentTime;
 
-          let isd = imsc.generateISD(this._ttDocument!, currentTime);
+          let isd = this.generateISD(currentTime);
           let isdHasContents = isd.contents && isd.contents.length > 0;
 
           if (isdHasContents) {
@@ -189,6 +189,10 @@ export class ImscTextTrackController extends BaseTextTrackController {
 
       nextCompleteObserver(observer);
     });
+  }
+
+  protected generateISD(currentTime: number): imsc.ISD {
+    return imsc.generateISD(this._ttDocument!, currentTime);
   }
 
   hide(): Observable<void> {

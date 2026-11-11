@@ -309,7 +309,7 @@ export class PlayerLocal implements PlayerLocalApi, Destroyable {
                 switchMap((track) =>
                   this.loadSidecarTrack(track.id, {
                     trackType: TrackType.TEXT_TRACK,
-                    handlerType: preloadTextTrackHandler,
+                    handlerType: textTrack.imscDocuments?.length && preloadTextTrackHandler === PlayerTextHandlerType.MEDIA_CAPTIONS ? PlayerTextHandlerType.IMSC : preloadTextTrackHandler,
                   }).pipe(
                     tap(() => {
                       if (defaultTextTrack?.id === textTrack.id) {

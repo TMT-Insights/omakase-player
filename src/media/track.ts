@@ -22,6 +22,7 @@ import {OpStage, type OpStageState} from '../common/op-stage';
 import type {Destroyable} from '../common/capabilities';
 import {ObserverBreaker} from '../common/observer-breaker';
 import type {Source, SourceState} from '../source';
+import {BlobUtil} from '../util/blob-util';
 import type {FileFormatType, OmpEventGroup} from '../common';
 import {objectHasOwnProperty} from '../util/util-functions';
 import type {TrackLoadOptions} from '../track';
@@ -165,6 +166,8 @@ export interface Track<S extends TrackState = TrackState, E extends OmpEventGrou
  * Construction arguments for {@link BaseTrack} and its subclasses.
  */
 export interface BaseTrackArgs extends BaseMediaEntityArgs {
+  /** Runtime-only resources owned by this track, retained while its media is detached. */
+  ownedResourceUrls?: string[] | undefined;
   /** Data source backing this track. */
   source?: Source | undefined;
   /** Initial set of inter-track relations. */
@@ -205,6 +208,7 @@ export abstract class BaseTrack<S extends TrackState, E extends OmpEventGroup<an
   protected readonly _mediaType = MediaEntityType.TRACK;
   protected abstract readonly _trackType: TrackType;
   protected readonly _source: Source | undefined;
+  protected readonly _ownedResourceUrls: string[];
   protected readonly _sourceFileFormatType?: FileFormatType | undefined;
 
   protected readonly _loadOptions: TrackLoadOptions | undefined;
@@ -221,6 +225,7 @@ export abstract class BaseTrack<S extends TrackState, E extends OmpEventGroup<an
     super(args);
 
     this._source = args?.source;
+    this._ownedResourceUrls = args?.ownedResourceUrls ?? [];
 
     this._loadOptions = args?.loadOptions;
 
@@ -361,5 +366,6 @@ export abstract class BaseTrack<S extends TrackState, E extends OmpEventGroup<an
 
   destroy() {
     this._destroyBreaker.destroy();
+    this._ownedResourceUrls.splice(0).forEach((url) => BlobUtil.revokeObjectURL(url));
   }
 }

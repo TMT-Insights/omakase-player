@@ -259,6 +259,7 @@ export class MediaDeserializer implements Destroyable {
       kind: state.kind,
       srclang: state.srclang,
       default: state.default,
+      imscDocuments: state.imscDocuments,
     };
   }
 
