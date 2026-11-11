@@ -162,7 +162,7 @@ describe('DASH index loading', () => {
   it.each([
     [() => new Response('', {status: 403}), /HTTP 403/],
     [() => new Response(createSidx()), /truncated SIDX full-file response/],
-    [() => new Response(null), /empty SIDX full-file response/],
+    [() => new Response(null), /empty SIDX response/],
     [() => new Response(null, {status: 204}), /unexpected HTTP 204/],
     [() => new Response(createSidx(), {status: 206, headers: {'Content-Range': 'bytes 0-67/1000'}}), /Content-Range/],
     [() => rangeResponse(createSidx().slice(0, 20)), /range response/],

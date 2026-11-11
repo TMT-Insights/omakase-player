@@ -16,6 +16,8 @@
 
 import {Observable} from 'rxjs';
 import {AuthConfig} from '../common/authentication';
+import {httpGetBytes} from '../http';
+import {parseMp4BoxHeader} from './dash-mp4-box';
 import {OmpError} from '../types';
 import {
   concatDashTrack,
@@ -55,37 +57,6 @@ export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (it
   return results;
 }
 
-async function readFullResponseIndex(response: Response, range: DashByteRange, allowShort = false): Promise<ArrayBuffer> {
-  if (!response.body) {
-    return fail('empty SIDX full-file response');
-  }
-  const reader = response.body.getReader();
-  const index = new Uint8Array(range.length);
-  const end = range.offset + range.length;
-  let position = 0;
-  try {
-    while (position < end) {
-      const {done, value} = await reader.read();
-      if (done) {
-        if (allowShort) {
-          return index.slice(0, Math.max(position - range.offset, 0)).buffer;
-        }
-        return fail('truncated SIDX full-file response');
-      }
-      const start = Math.max(range.offset - position, 0);
-      const stop = Math.min(value.byteLength, end - position);
-      if (stop > start) {
-        index.set(value.subarray(start, stop), Math.max(position - range.offset, 0));
-      }
-      position += value.byteLength;
-    }
-    return index.buffer;
-  } finally {
-    await reader.cancel();
-    reader.releaseLock();
-  }
-}
-
 function fail(message: string): never {
   throw new OmpError(`DASH: ${message}`);
 }
@@ -108,23 +79,15 @@ function readSidx(data: ArrayBuffer, absoluteOffset: number): {earliestTime: num
   const uint64 = (offset: number) => safeInteger(view.getUint32(offset) * 2 ** 32 + view.getUint32(offset + 4), '64-bit value');
   let boxStart = 0;
   while (boxStart + 8 <= view.byteLength) {
-    let size = view.getUint32(boxStart);
-    const type = String.fromCharCode(...new Uint8Array(data, boxStart + 4, 4));
-    let headerSize = 8;
-    if (size === 1) {
-      if (boxStart + 16 > view.byteLength) {
-        return fail('truncated SIDX box header');
-      }
-      size = uint64(boxStart + 8);
-      headerSize = 16;
-    } else if (size === 0) {
-      size = view.byteLength - boxStart;
-    }
+    const header = parseMp4BoxHeader(view, boxStart);
+    const size = header.size || view.byteLength - boxStart;
+    const headerSize = header.headerSize;
     const boxEnd = safeInteger(boxStart + size, 'box end');
     if (size < headerSize || boxEnd > view.byteLength) {
       return fail('truncated or invalid SIDX box');
     }
-    if (type !== 'sidx') {
+    // stops at the first SIDX: an index range may run into whatever follows it
+    if (header.type !== 'sidx') {
       boxStart = boxEnd;
       continue;
     }
@@ -240,71 +203,20 @@ async function fetchIndex(source: DashIndexSource, signal: AbortSignal, budget: 
   if (++budget.requests > 2048) {
     return fail('too many index requests');
   }
-  const range = source.range;
-  if (range && range.length > MAX_INDEX_BYTES) {
-    return fail(`SIDX indexRange exceeds ${MAX_INDEX_BYTES} bytes`);
-  }
-  const request = AuthConfig.createRequestInit(source.url, AuthConfig.authentication);
-  const headers = new Headers(request.headers);
-  if (range) {
-    headers.set('Range', `bytes=${range.offset}-${safeInteger(range.offset + range.length - 1, 'index range end')}`);
-  }
-  const response = await fetch(source.url, {...request, headers, signal});
-  if (!response.ok) {
-    return fail(`HTTP ${response.status} ${response.statusText} for SIDX ${source.url}`);
-  }
-  if (response.status !== 200 && response.status !== 206) {
-    return fail(`unexpected HTTP ${response.status} for SIDX`);
-  }
-  const contentRange = response.headers.get('Content-Range');
-  if (range && response.status === 206 && contentRange) {
-    const match = /^bytes (\d+)-(\d+)\/(?:\d+|\*)$/i.exec(contentRange);
-    const end = range.offset + range.length - 1;
-    if (!match || Number(match[1]) !== range.offset || (allowShort ? Number(match[2]) > end : Number(match[2]) !== end)) {
-      return fail('unexpected SIDX Content-Range');
-    }
-  }
-  const total = response.status === 200 ? Number(response.headers.get('Content-Length')) || undefined : Number(contentRange?.split('/')[1]) || undefined;
-  let data: ArrayBuffer;
-  if (range && response.status === 200) {
-    data = await readFullResponseIndex(response, range, allowShort);
-  } else {
-    if (!response.body) {
-      return fail('empty SIDX response');
-    }
-    const reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let length = 0;
-    try {
-      while (true) {
-        const {done, value} = await reader.read();
-        if (done) break;
-        length += value.byteLength;
-        if (length > (range?.length ?? MAX_INDEX_BYTES)) {
-          return fail('truncated or oversized SIDX range response');
-        }
-        chunks.push(value);
-      }
-      const buffer = new Uint8Array(length);
-      let offset = 0;
-      for (const chunk of chunks) {
-        buffer.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      data = buffer.buffer;
-    } finally {
-      await reader.cancel();
-      reader.releaseLock();
-    }
-  }
-  if (range && (allowShort ? total !== undefined && data.byteLength < Math.min(range.length, total - range.offset) : data.byteLength !== range.length)) {
-    return fail('truncated or oversized SIDX range response');
-  }
+  const {data, total} = await httpGetBytes(source.url, {
+    range: source.range,
+    maxBytes: MAX_INDEX_BYTES,
+    allowShort,
+    requestInit: AuthConfig.createRequestInit(source.url, AuthConfig.authentication),
+    signal,
+    label: 'SIDX',
+    errorPrefix: 'DASH: ',
+  });
   budget.bytes += data.byteLength;
   if (budget.bytes > 64 * 1024 * 1024) {
     return fail('combined SIDX data exceeds 64 MiB');
   }
-  return {data, ...(total === undefined ? {} : {total})};
+  return {data: data.buffer, ...(total === undefined ? {} : {total})};
 }
 
 async function resolveIndex(
@@ -424,14 +336,10 @@ async function discoverBoxes(url: string, signal: AbortSignal, budget: IndexBudg
   for (let count = 0; count < 1024; count++) {
     const header = await reader.read(offset, 16);
     if (header.byteLength < 8) return fail('MP4 initialization/index not found before the end of the file');
-    const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
-    const type = String.fromCharCode(...header.subarray(4, 8));
-    let size = view.getUint32(0);
-    const headerSize = size === 1 ? 16 : 8;
-    if (size === 1) {
-      if (header.byteLength < 16) return fail('truncated MP4 box');
-      size = safeInteger(view.getUint32(8) * 2 ** 32 + view.getUint32(12), 'box size');
-    }
+    const parsed = parseMp4BoxHeader(new DataView(header.buffer, header.byteOffset, header.byteLength), 0);
+    const type = parsed.type;
+    const headerSize = parsed.headerSize;
+    let size = parsed.size;
     const total = reader.total;
     if (size === 0 && total !== undefined) size = total - offset;
     if (size < headerSize) return fail('invalid MP4 box during initialization/index discovery');

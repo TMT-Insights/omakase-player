@@ -652,7 +652,9 @@ function parsePeriodRenditions(mpd: Element, period: Element, manifestUrl: strin
       }
       renditions.push(...parsed);
     } else {
-      // HLS exposes alternate audio tracks, not DASH's per-track representation ladder.
+      // Known limit (documented in the README): HLS exposes alternate audio tracks, not a per-track
+      // bitrate ladder, so each audio/text/image AdaptationSet plays its highest-bandwidth
+      // representation and never adapts down. Video keeps its full ladder.
       renditions.push(parsed.reduce((best, rendition) => (rendition.bandwidth > best.bandwidth ? rendition : best)));
     }
   }

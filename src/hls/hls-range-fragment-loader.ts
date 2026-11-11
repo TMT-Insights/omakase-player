@@ -15,11 +15,37 @@
  */
 
 import Hls, {FetchLoader, type FragmentLoaderContext, type HlsConfig, type Loader, type LoaderCallbacks, type LoaderConfiguration, type LoaderContext} from 'hls.js';
-import {AuthConfig} from '../common/authentication';
 
-/** Keeps full-file HTTP 200 responses out of the byte-range fragment demuxer. */
-export function createDashFragmentLoader(baseLoader: HlsConfig['loader'] = Hls.DefaultConfig.loader): NonNullable<HlsConfig['fLoader']> {
-  return class DashFragmentLoader implements Loader<FragmentLoaderContext> {
+type FragmentLoaderClass = NonNullable<HlsConfig['fLoader']>;
+
+/** Marks loader classes produced by {@link createRangeFragmentLoader}, so that they are not wrapped twice. */
+const RANGE_FRAGMENT_LOADER = Symbol('rangeFragmentLoader');
+
+export function isRangeFragmentLoader(loader: unknown): boolean {
+  return !!loader && (loader as {[RANGE_FRAGMENT_LOADER]?: boolean})[RANGE_FRAGMENT_LOADER] === true;
+}
+
+/**
+ * Fragment loader that keeps a server's full-file HTTP 200 reply to a byte-range request out of the
+ * demuxer. Ignoring `Range` is legal, and with byte-range playlists (HLS `EXT-X-BYTERANGE`, DASH
+ * indexes) it would otherwise hand hls.js a whole file - possibly gigabytes - as one fragment.
+ *
+ * With the default loaders, ranged fragments are streamed with a {@link FetchLoader}: the prefix is
+ * discarded and the response cancelled as soon as the range has arrived. Requests go through
+ * `hlsConfig.fetchSetup`, which is where authentication and credentials are applied. Fragments
+ * without a range use `baseLoader` untouched.
+ *
+ * @param options.stream `false` keeps ranged fragments on `baseLoader` too (eg. when the application
+ * customises XHR requests); a full-file response is then buffered before it is sliced.
+ */
+export function createRangeFragmentLoader(baseLoader: HlsConfig['loader'] = Hls.DefaultConfig.loader, options: {stream?: boolean} = {}): FragmentLoaderClass {
+  const stream = options.stream ?? true;
+  if (isRangeFragmentLoader(baseLoader)) {
+    return baseLoader as FragmentLoaderClass;
+  }
+  return class RangeFragmentLoader implements Loader<FragmentLoaderContext> {
+    static readonly [RANGE_FRAGMENT_LOADER] = true;
+
     context: FragmentLoaderContext | null = null;
     private readonly _loader: Loader<LoaderContext>;
     private readonly _rangeLoader?: Loader<LoaderContext>;
@@ -27,16 +53,8 @@ export function createDashFragmentLoader(baseLoader: HlsConfig['loader'] = Hls.D
 
     constructor(config: HlsConfig) {
       this._loader = new baseLoader(config);
-      if (baseLoader === Hls.DefaultConfig.loader || baseLoader === FetchLoader) {
-        this._rangeLoader = new FetchLoader({
-          ...config,
-          fetchSetup: (context, init) => {
-            const headers = new Headers(init.headers);
-            new Headers(AuthConfig.createRequestInit(context.url, AuthConfig.authentication).headers).forEach((value, name) => headers.set(name, value));
-            const options = {...init, headers};
-            return config.fetchSetup ? config.fetchSetup(context, options) : new Request(context.url, options);
-          },
-        });
+      if (stream && (baseLoader === Hls.DefaultConfig.loader || baseLoader === FetchLoader)) {
+        this._rangeLoader = new FetchLoader(config);
         this._rangeLoader.stats = this._loader.stats;
       }
     }
@@ -96,13 +114,13 @@ export function createDashFragmentLoader(baseLoader: HlsConfig['loader'] = Hls.D
             let data = response.data;
             if (response.code === 200) {
               if (!(data instanceof ArrayBuffer) || data.byteLength < end) {
-                callbacks.onError({code: 200, text: 'DASH: truncated full-file fragment response'}, context, networkDetails, stats);
+                callbacks.onError({code: 200, text: 'truncated full-file fragment response'}, context, networkDetails, stats);
                 return;
               }
               data = data.slice(start, end);
             }
             if (!(data instanceof ArrayBuffer) || data.byteLength !== end - start) {
-              callbacks.onError({code: response.code ?? 0, text: 'DASH: invalid fragment byte-range response'}, context, networkDetails, stats);
+              callbacks.onError({code: response.code ?? 0, text: 'invalid fragment byte-range response'}, context, networkDetails, stats);
               return;
             }
             forwardProgress?.(stats, loaderContext, data, networkDetails);
@@ -130,7 +148,7 @@ export function createDashFragmentLoader(baseLoader: HlsConfig['loader'] = Hls.D
         }
         settled = true;
         loader.abort();
-        callbacks.onError({code: details instanceof Response ? details.status : 0, text: `DASH: ${text}`}, context, details, this.stats);
+        callbacks.onError({code: details instanceof Response ? details.status : 0, text}, context, details, this.stats);
       };
       const succeed = (response: Response) => {
         if (settled) {
@@ -152,7 +170,9 @@ export function createDashFragmentLoader(baseLoader: HlsConfig['loader'] = Hls.D
       };
       loader.load(
         context,
-        {...config, highWaterMark: 64 * 1024},
+        // emit every chunk as it arrives: hls.js would otherwise join small ones into 64 KiB blocks,
+        // a copy made only to be copied again into the fragment buffer
+        {...config, highWaterMark: 1},
         {
           onProgress: (stats, _context, chunk, details: unknown) => {
             if (settled) {
@@ -173,7 +193,11 @@ export function createDashFragmentLoader(baseLoader: HlsConfig['loader'] = Hls.D
             }
             const from = Math.max(rangeStart - position, 0);
             const to = Math.min(bytes.byteLength, rangeEnd - position);
-            if (to > from) {
+            if (!data && from === 0 && to === bytes.byteLength && to === end - start) {
+              // the whole range in one chunk: use it as is
+              data = bytes;
+              retained = to;
+            } else if (to > from) {
               data ??= new Uint8Array(end - start);
               data.set(bytes.subarray(from, to), retained);
               retained += to - from;

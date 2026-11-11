@@ -10,6 +10,7 @@ import * as imsc from 'smp-imsc';
 import {AuthConfig, FileFormatType} from '../common';
 import {DefaultTextCue, TextTrackFile, ThumbnailTrack, TimedItemTemporalType, type TimedImscDocument} from '../media';
 import {UrlSource} from '../source';
+import {httpGetBytes} from '../http';
 import {OmpError} from '../types';
 import type {DashByteRange, DashManifest, DashPeriod, DashRendition, DashSegment} from './dash-manifest';
 import {createDashIndexBudget, mapLimit, resolveDashRendition} from './dash-segment-index';
@@ -110,53 +111,17 @@ export function loadDashAuxiliaryTracks(manifest: DashManifest, createResource: 
     const fetchResource = async (url: string, range?: DashByteRange): Promise<Uint8Array<ArrayBuffer>> => {
       signal.throwIfAborted();
       if (++requests > 4096) fail('more than 4096 auxiliary requests');
-      const limit = 32 * 1024 * 1024;
-      if (range && range.length > limit) fail('auxiliary byte range exceeds 32 MiB');
-      const init = AuthConfig.createRequestInit(url, AuthConfig.authentication);
-      const headers = new Headers(init.headers);
-      if (range) headers.set('Range', `bytes=${range.offset}-${range.offset + range.length - 1}`);
-      const response = await fetch(url, {...init, headers, signal});
-      if (!response.ok || ![200, 206].includes(response.status)) fail(`HTTP ${response.status} for ${url}`);
-      if (range && response.status === 206) {
-        const contentRange = response.headers.get('Content-Range');
-        if (contentRange && !new RegExp(`^bytes ${range.offset}-${range.offset + range.length - 1}/(?:\\d+|\\*)$`, 'i').test(contentRange)) fail('unexpected auxiliary Content-Range');
-      }
-      if (!response.body) return fail('empty auxiliary response');
-      const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let received = 0;
-      let retained = 0;
-      const skip = range && response.status === 200 ? range.offset : 0;
-      try {
-        while (true) {
-          const {value, done} = await reader.read();
-          if (done) break;
-          if (range && response.status === 206 && received + value.length > range.length) fail('oversized auxiliary range response');
-          const start = Math.max(0, skip - received);
-          const end = range ? Math.min(value.length, skip + range.length - received) : value.length;
-          received += value.length;
-          if (end > start) {
-            const chunk = value.slice(start, end);
-            retained += chunk.length;
-            bytes += chunk.length;
-            if (retained > limit || bytes > 128 * 1024 * 1024) fail('auxiliary resources exceed 32 MiB per request or 128 MiB combined');
-            chunks.push(chunk);
-          }
-          if (range && response.status === 200 && retained === range.length) break;
-        }
-      } finally {
-        await reader.cancel();
-        reader.releaseLock();
-      }
-      if (range && retained !== range.length) fail('truncated auxiliary range response');
-      signal.throwIfAborted();
-      const result = new Uint8Array(retained);
-      let position = 0;
-      for (const chunk of chunks) {
-        result.set(chunk, position);
-        position += chunk.length;
-      }
-      return result;
+      const {data} = await httpGetBytes(url, {
+        range,
+        maxBytes: 32 * 1024 * 1024,
+        requestInit: AuthConfig.createRequestInit(url, AuthConfig.authentication),
+        signal,
+        label: 'auxiliary',
+        errorPrefix: 'DASH auxiliary: ',
+      });
+      bytes += data.byteLength;
+      if (bytes > 128 * 1024 * 1024) fail('auxiliary resources exceed 128 MiB combined');
+      return data;
     };
     const resource = (group: Group, data: BlobPart[], mime: string) => {
       const url = createResource(data, mime);

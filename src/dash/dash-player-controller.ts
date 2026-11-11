@@ -27,7 +27,6 @@ import {BlobUtil} from '../util/blob-util';
 import {OmpError} from '../types';
 import {type DashSegment, dashSegmentsAligned, parseDashManifest, planDashTracks, writeDashMasterPlaylist, writeDashMediaPlaylist} from './dash-manifest';
 import {createDashIndexBudget, resolveDashTrack} from './dash-segment-index';
-import {createDashFragmentLoader} from './dash-fragment-loader';
 import {loadDashAuxiliaryTracks} from './dash-auxiliary';
 
 /** Origin of the synthetic playlist URLs served by {@link SyntheticManifestLoader}. */
@@ -52,7 +51,6 @@ export class DashPlayerController extends HlsPlayerController {
       hlsConfig: {
         ...config?.hlsConfig,
         pLoader: SyntheticManifestLoader as NonNullable<HlsConfig['pLoader']>,
-        fLoader: createDashFragmentLoader(config?.hlsConfig?.fLoader ?? config?.hlsConfig?.loader),
       },
     });
   }

@@ -6,13 +6,7 @@
  */
 
 import {OmpError} from '../types';
-
-interface Box {
-  type: string;
-  start: number;
-  payload: number;
-  end: number;
-}
+import {type Mp4Box as Box, readMp4Boxes as boxes} from './dash-mp4-box';
 
 export interface DashTextMp4Track {
   id: number;
@@ -36,25 +30,6 @@ function uint64(view: DataView, offset: number): number {
   const value = view.getUint32(offset) * 2 ** 32 + view.getUint32(offset + 4);
   if (!Number.isSafeInteger(value)) fail('unsafe 64-bit value');
   return value;
-}
-
-function boxes(data: Uint8Array, start = 0, end = data.byteLength): Box[] {
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const result: Box[] = [];
-  while (start < end) {
-    if (start + 8 > end) fail('truncated box');
-    let size = view.getUint32(start);
-    let header = 8;
-    if (size === 1) {
-      if (start + 16 > end) fail('truncated extended box');
-      size = uint64(view, start + 8);
-      header = 16;
-    } else if (!size) size = end - start;
-    if (size < header || start + size > end) fail('invalid box size');
-    result.push({type: new TextDecoder().decode(data.subarray(start + 4, start + 8)), start, payload: start + header, end: start + size});
-    start += size;
-  }
-  return result;
 }
 
 function child(data: Uint8Array, parent: Box, type: string): Box {

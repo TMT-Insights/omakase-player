@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import Hls, {Fragment, type FragmentLoaderContext, type HlsConfig, type LoaderCallbacks, type LoaderConfiguration, type LoaderContext, type LoaderResponse, type LoaderStats} from 'hls.js';
-import {createDashFragmentLoader} from '../../src/dash/dash-fragment-loader';
+import {createRangeFragmentLoader, isRangeFragmentLoader} from '../../src/hls/hls-range-fragment-loader';
+import {createAuthFetchSetup} from '../../src/hls/hls-request-setup';
+import {HlsPlayerController} from '../../src/hls/hls-player-controller';
 import {AuthConfig} from '../../src/common/authentication';
 
 const load = vi.fn<(context: LoaderContext, config: LoaderConfiguration, callbacks: LoaderCallbacks<LoaderContext>) => void>();
@@ -39,7 +41,7 @@ const stats: LoaderStats = {
 function run(response: LoaderResponse, request = context) {
   const callbacks: LoaderCallbacks<FragmentLoaderContext> = {onSuccess: vi.fn(), onError: vi.fn(), onTimeout: vi.fn(), onProgress: vi.fn()};
   load.mockImplementation((loaderContext, _config, loaderCallbacks) => loaderCallbacks.onSuccess(response, stats, loaderContext, {status: response.code}));
-  const Loader = createDashFragmentLoader(TestLoader);
+  const Loader = createRangeFragmentLoader(TestLoader);
   const loader = new Loader(Hls.DefaultConfig);
   loader.load(request, config, callbacks);
   return {callbacks, loader};
@@ -55,14 +57,14 @@ afterEach(() => {
 function streamRange(response: Response, request = context, hlsConfig = Hls.DefaultConfig, loaderConfig = config) {
   const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
   vi.stubGlobal('fetch', fetchMock);
-  const Loader = createDashFragmentLoader();
+  const Loader = createRangeFragmentLoader();
   const loader = new Loader(hlsConfig);
   const callbacks: LoaderCallbacks<FragmentLoaderContext> = {onSuccess: vi.fn(), onError: vi.fn(), onTimeout: vi.fn(), onAbort: vi.fn(), onProgress: vi.fn()};
   loader.load(request, loaderConfig, callbacks);
   return {loader, callbacks, fetchMock};
 }
 
-describe('streaming DASH byte ranges', () => {
+describe('streaming byte ranges', () => {
   it('discards the prefix and cancels a multi-gigabyte HTTP 200 response after the requested range', async () => {
     let chunks = 0;
     const body = new ReadableStream<Uint8Array>({
@@ -125,10 +127,11 @@ describe('streaming DASH byte ranges', () => {
     loader.destroy();
   });
 
-  it('applies authentication, context headers and configured fetch setup', async () => {
+  it('sends ranged requests through the configured fetchSetup, where authentication is applied', async () => {
     AuthConfig.authentication = {type: 'custom', headers: () => ({headers: {'X-Auth': 'test'}})};
     const fetchSetup = vi.fn<NonNullable<HlsConfig['fetchSetup']>>((context, init) => new Request(context.url, {...init, credentials: 'include'}));
-    const {loader, callbacks, fetchMock} = streamRange(new Response(new Uint8Array(5)), {...context, headers: {'X-Context': 'value'}}, {...Hls.DefaultConfig, fetchSetup});
+    const hlsConfig = {...Hls.DefaultConfig, fetchSetup: createAuthFetchSetup(fetchSetup)};
+    const {loader, callbacks, fetchMock} = streamRange(new Response(new Uint8Array(5)), {...context, headers: {'X-Context': 'value'}}, hlsConfig);
     await vi.waitFor(() => expect(callbacks.onSuccess).toHaveBeenCalledOnce());
     const request = fetchMock.mock.calls[0]![0] as Request;
     expect(request.headers.get('X-Auth')).toBe('test');
@@ -171,7 +174,7 @@ describe('streaming DASH byte ranges', () => {
   });
 });
 
-describe('DASH byte-range fragment loader', () => {
+describe('byte-range fragment loader', () => {
   it('slices full HTTP 200 responses before forwarding progress or success to hls.js', () => {
     const file = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7]).buffer;
     const {callbacks} = run({url: context.url, code: 200, data: file});
@@ -217,7 +220,7 @@ describe('DASH byte-range fragment loader', () => {
     const abort = vi.spyOn(TestLoader.prototype, 'abort');
     const destroy = vi.spyOn(TestLoader.prototype, 'destroy');
     const customConfig: HlsConfig = {...Hls.DefaultConfig};
-    const Loader = createDashFragmentLoader(TestLoader);
+    const Loader = createRangeFragmentLoader(TestLoader);
     const loader = new Loader(customConfig);
     loader.abort();
     loader.destroy();
@@ -239,7 +242,7 @@ describe('DASH byte-range fragment loader', () => {
       forwarded.onTimeout(stats, loaderContext, null);
       forwarded.onAbort?.(stats, loaderContext, null);
     });
-    const Loader = createDashFragmentLoader(CustomLoader);
+    const Loader = createRangeFragmentLoader(CustomLoader);
     const loader = new Loader(Hls.DefaultConfig);
     loader.load(context, config, callbacks);
     expect(callbacks.onError).toHaveBeenCalledWith({code: 403, text: 'Forbidden'}, context, null, stats);
@@ -249,5 +252,54 @@ describe('DASH byte-range fragment loader', () => {
     expect(loader.stats).toBeDefined();
     expect(loader.getCacheAge?.()).toBe(12);
     expect(loader.getResponseHeader?.('Content-Type')).toBe('video/mp4');
+  });
+});
+
+describe('range fragment loader wiring', () => {
+  it('does not wrap a range fragment loader twice', () => {
+    const Loader = createRangeFragmentLoader(TestLoader);
+    expect(isRangeFragmentLoader(Loader)).toBe(true);
+    expect(createRangeFragmentLoader(Loader)).toBe(Loader);
+    expect(isRangeFragmentLoader(TestLoader)).toBe(false);
+  });
+
+  it('keeps ranged fragments on the base loader, sliced, when streaming is disabled', () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal('fetch', fetchMock);
+    const callbacks: LoaderCallbacks<FragmentLoaderContext> = {onSuccess: vi.fn(), onError: vi.fn(), onTimeout: vi.fn()};
+    load.mockImplementation((loaderContext, _config, loaderCallbacks) =>
+      loaderCallbacks.onSuccess({url: context.url, code: 200, data: new Uint8Array([0, 1, 2, 3, 4, 5]).buffer}, stats, loaderContext, null)
+    );
+    const Loader = createRangeFragmentLoader(Hls.DefaultConfig.loader, {stream: false});
+    vi.spyOn(Hls.DefaultConfig.loader.prototype, 'load').mockImplementation(load as never);
+    new Loader(Hls.DefaultConfig).load(context, config, callbacks);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).toHaveBeenCalledWith(expect.objectContaining({data: new Uint8Array([2, 3, 4]).buffer}), stats, context, null);
+    vi.restoreAllMocks();
+  });
+
+  it('composes authentication with an application fetchSetup once, and builds a plain Request otherwise', async () => {
+    AuthConfig.authentication = {type: 'custom', headers: () => ({headers: {'X-Auth': 'test'}})};
+    const setup = createAuthFetchSetup();
+    expect(createAuthFetchSetup(setup)).toBe(setup);
+    const request = (await setup({...context}, {headers: new Headers({'X-Context': 'value'})})) as Request;
+    expect(request.headers.get('X-Auth')).toBe('test');
+    expect(request.headers.get('X-Context')).toBe('value');
+    AuthConfig.authentication = undefined;
+    expect(((await setup({...context}, {})) as Request).headers.get('X-Auth')).toBeNull();
+  });
+
+  it('gives every HLS controller the range loader and authenticated fetches, keeping the application config', () => {
+    const resolve = (hlsConfig: Partial<HlsConfig>) => (HlsPlayerController as unknown as {resolveHlsConfig(config: Partial<HlsConfig>): Partial<HlsConfig>}).resolveHlsConfig(hlsConfig);
+    const rangeLoader = (hlsConfig: Partial<HlsConfig>) => (new (resolve(hlsConfig).fLoader!)(Hls.DefaultConfig as HlsConfig) as unknown as {_rangeLoader?: unknown})._rangeLoader;
+    const fetchSetup = vi.fn<NonNullable<HlsConfig['fetchSetup']>>((context, init) => new Request(context.url, init));
+    const resolved = resolve({...Hls.DefaultConfig, fetchSetup});
+    expect(isRangeFragmentLoader(resolved.fLoader)).toBe(true);
+    resolved.fetchSetup!({...context}, {});
+    expect(fetchSetup).toHaveBeenCalledOnce();
+    expect(rangeLoader({...Hls.DefaultConfig})).toBeDefined();
+    // an application xhrSetup must keep applying to ranged fragments
+    expect(rangeLoader({...Hls.DefaultConfig, xhrSetup: () => {}})).toBeUndefined();
+    expect(rangeLoader({...Hls.DefaultConfig, xhrSetup: () => {}, fetchSetup})).toBeDefined();
   });
 });

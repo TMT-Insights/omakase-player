@@ -190,8 +190,9 @@ describe('DashPlayerController', () => {
     await expect(SyntheticManifestRegistry.resolve(mediaUrls()[1]!)!).rejects.toThrow(/aligned segment boundaries/);
   });
 
-  it('installs the synthetic playlist loader and the DASH fragment adapter without replacing other HLS configuration', () => {
-    expect(configureHls).toHaveBeenCalledWith(expect.anything(), {hlsConfig: {pLoader: SyntheticManifestLoader, fLoader: expect.any(Function)}});
+  it('installs the synthetic playlist loader without replacing other HLS configuration', () => {
+    // byte-range fragments are handled by HlsPlayerController for every HLS source
+    expect(configureHls).toHaveBeenCalledWith(expect.anything(), {hlsConfig: {pLoader: SyntheticManifestLoader}});
   });
 
   it('loads one MPD containing content/ad/content Periods into one HLS session', async () => {
