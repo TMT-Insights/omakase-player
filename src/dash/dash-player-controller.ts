@@ -23,6 +23,7 @@ import {ObserverBreaker} from '../common/observer-breaker';
 import {BlobUtil} from '../util/blob-util';
 import {OmpError} from '../types';
 import {parseDashManifest, writeDashMasterPlaylist, writeDashMediaPlaylist} from './dash-manifest';
+import {resolveDashSegmentIndexes} from './dash-segment-index';
 
 /** Bridges a static MPD to HLS; the original MPD remains the source in serialized media state. */
 export class DashPlayerController extends HlsPlayerController {
@@ -50,6 +51,7 @@ export class DashPlayerController extends HlsPlayerController {
           return from(response.text()).pipe(map((xml) => parseDashManifest(xml, response.url || sourceUrl)));
         },
       }).pipe(
+        switchMap((manifest) => resolveDashSegmentIndexes(manifest)),
         switchMap((manifest) => {
           const playlists = manifest.renditions.map((rendition) => this.createPlaylist(writeDashMediaPlaylist(rendition)));
           const masterUrl = this.createPlaylist(writeDashMasterPlaylist(manifest.renditions, playlists));

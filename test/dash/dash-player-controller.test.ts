@@ -26,6 +26,7 @@ vi.mock('../../src/hls/hls-player-controller', async () => {
 
 import {DashPlayerController} from '../../src/dash/dash-player-controller';
 import {AuthConfig} from '../../src/common/authentication';
+import {createSidx} from './sidx-fixture';
 
 const xml = `<MPD mediaPresentationDuration="PT4S"><Period><AdaptationSet mimeType="video/mp4" codecs="avc1.4d401e" frameRate="25">
   <SegmentTemplate duration="2" initialization="init.mp4" media="$Number$.m4s"/><Representation id="v" bandwidth="1000000"/>
@@ -93,6 +94,66 @@ describe('DashPlayerController', () => {
 
     expect(text).toContain('https://cdn.example.com/redirected/init.mp4');
     expect(text).toContain('https://cdn.example.com/redirected/1.m4s');
+  });
+
+  it('resolves SegmentBase indexes before starting HLS playback', async () => {
+    const segmentBaseXml = xml.replace(
+      '<SegmentTemplate duration="2" initialization="init.mp4" media="$Number$.m4s"/>',
+      '<BaseURL>video.mp4</BaseURL><SegmentBase indexRange="100-167"><Initialization range="0-99"/></SegmentBase>'
+    );
+    fetchMock.mockResolvedValueOnce(new Response(segmentBaseXml)).mockResolvedValueOnce(new Response(createSidx(), {status: 206}));
+    await expect(firstValueFrom(controller.loadMainMedia(args))).resolves.toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://example.com/video.mp4');
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Range')).toBe('bytes=100-167');
+    expect(loadHls).toHaveBeenCalledOnce();
+    expect(blobs).toHaveLength(2);
+  });
+
+  it('surfaces index errors without invoking HLS or creating playlists', async () => {
+    const segmentBaseXml = xml.replace(
+      '<SegmentTemplate duration="2" initialization="init.mp4" media="$Number$.m4s"/>',
+      '<SegmentBase indexRange="100-167"><Initialization range="0-99"/></SegmentBase>'
+    );
+    fetchMock.mockResolvedValueOnce(new Response(segmentBaseXml)).mockResolvedValueOnce(new Response('', {status: 403}));
+    await expect(firstValueFrom(controller.loadMainMedia(args))).rejects.toThrow(/DASH: HTTP 403/);
+    expect(loadHls).not.toHaveBeenCalled();
+    expect(blobs).toHaveLength(0);
+  });
+
+  it('aborts pending SIDX requests when a new load supersedes them', async () => {
+    const segmentBaseXml = xml.replace(
+      '<SegmentTemplate duration="2" initialization="init.mp4" media="$Number$.m4s"/>',
+      '<SegmentBase indexRange="100-167"><Initialization range="0-99"/></SegmentBase>'
+    );
+    fetchMock.mockResolvedValueOnce(new Response(segmentBaseXml)).mockImplementationOnce(() => new Promise<Response>(() => {}));
+    const complete = vi.fn();
+    controller.loadMainMedia(args).subscribe({complete});
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const signal = fetchMock.mock.calls[1]![1]!.signal!;
+    await firstValueFrom(controller.loadMainMedia(args));
+    expect(signal.aborted).toBe(true);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(loadHls).toHaveBeenCalledOnce();
+  });
+
+  it.each(['unsubscribe', 'destroy'])('aborts pending SIDX requests on %s', async (action) => {
+    const segmentBaseXml = xml.replace(
+      '<SegmentTemplate duration="2" initialization="init.mp4" media="$Number$.m4s"/>',
+      '<SegmentBase indexRange="100-167"><Initialization range="0-99"/></SegmentBase>'
+    );
+    fetchMock.mockResolvedValueOnce(new Response(segmentBaseXml)).mockImplementationOnce(() => new Promise<Response>(() => {}));
+    const subscription = controller.loadMainMedia(args).subscribe();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const signal = fetchMock.mock.calls[1]![1]!.signal!;
+    if (action === 'destroy') {
+      controller.destroy();
+    } else {
+      subscription.unsubscribe();
+    }
+    expect(signal.aborted).toBe(true);
+    expect(loadHls).not.toHaveBeenCalled();
+    expect(blobs).toHaveLength(0);
   });
 
   it('preserves explicit load options without mutating them', async () => {

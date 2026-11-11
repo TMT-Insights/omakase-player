@@ -16,9 +16,15 @@
 
 import {OmpError} from '../types';
 
+export interface DashByteRange {
+  offset: number;
+  length: number;
+}
+
 export interface DashSegment {
   url: string;
   duration: number;
+  byteRange?: DashByteRange;
 }
 
 export interface DashRendition {
@@ -33,6 +39,8 @@ export interface DashRendition {
   label: string;
   channels?: string | undefined;
   initializationUrl: string;
+  initializationByteRange?: DashByteRange;
+  segmentBase?: {indexRange: DashByteRange; mediaUrl: string};
   presentationTimeOffset: number;
   segments: DashSegment[];
 }
@@ -76,6 +84,20 @@ function integer(value: string | undefined, name: string, fallback?: number, min
     fail(`invalid ${name}`);
   }
   return result;
+}
+
+function byteRange(value: string | undefined, name: string): DashByteRange {
+  const match = /^(\d+)-(\d+)$/.exec(value ?? '');
+  if (!match) {
+    return fail(`invalid ${name} byte range`);
+  }
+  const offset = integer(match[1], name);
+  const end = integer(match[2], name, undefined, offset);
+  const length = end - offset + 1;
+  if (!Number.isSafeInteger(length)) {
+    fail(`invalid ${name} byte range`);
+  }
+  return {offset, length};
 }
 
 function duration(value: string | null): number | undefined {
@@ -158,9 +180,75 @@ function parseRendition(path: Element[], manifestUrl: string, periodDuration: nu
     }
   }
 
+  const segmentBases = path.map((element) => single(element, 'SegmentBase')).filter((element) => element !== undefined);
   const templates = path.map((element) => single(element, 'SegmentTemplate')).filter((element) => element !== undefined);
+  if (segmentBases.length && templates.length) {
+    fail('mixed SegmentBase and SegmentTemplate addressing is not supported');
+  }
+  const addressing = segmentBases.length ? parseSegmentBase(segmentBases, base) : parseSegmentTemplate(templates, base, id, bandwidth, periodDuration);
+  const frameRateValue = attr(path, 'frameRate');
+  let frameRate: number | undefined;
+  if (frameRateValue) {
+    const match = /^(\d+(?:\.\d+)?)(?:\/(\d+))?$/.exec(frameRateValue);
+    frameRate = match ? Number(match[1]) / Number(match[2] ?? 1) : NaN;
+    if (!Number.isFinite(frameRate) || frameRate <= 0) {
+      fail('invalid frameRate');
+    }
+  }
+  const channelElement = path.flatMap((element) => children(element, 'AudioChannelConfiguration')).at(-1);
+  const channels = channelElement?.getAttribute('schemeIdUri') === 'urn:mpeg:dash:23003:3:audio_channel_configuration:2011' ? (channelElement.getAttribute('value') ?? undefined) : undefined;
+  const language = attr(path, 'lang');
+  return {
+    type,
+    id,
+    bandwidth,
+    codecs,
+    width: attr(path, 'width') === undefined ? undefined : integer(attr(path, 'width'), 'width', undefined, 1),
+    height: attr(path, 'height') === undefined ? undefined : integer(attr(path, 'height'), 'height', undefined, 1),
+    frameRate,
+    language,
+    label:
+      path
+        .flatMap((element) => children(element, 'Label'))
+        .at(-1)
+        ?.textContent?.trim() ||
+      language ||
+      id ||
+      `${type} ${index + 1}`,
+    channels,
+    ...addressing,
+  };
+}
+
+type DashAddressing = Pick<DashRendition, 'initializationUrl' | 'initializationByteRange' | 'presentationTimeOffset' | 'segmentBase' | 'segments'>;
+
+function parseSegmentBase(segmentBases: Element[], base: string): DashAddressing {
+  const initialization = segmentBases.map((element) => single(element, 'Initialization')).findLast((element) => element !== undefined);
+  if (!initialization) {
+    return fail('SegmentBase requires Initialization');
+  }
+  if (segmentBases.some((element) => children(element, 'RepresentationIndex').length)) {
+    fail('SegmentBase RepresentationIndex is not supported; use indexRange');
+  }
+  const indexRange = byteRange(attr(segmentBases, 'indexRange'), 'SegmentBase@indexRange');
+  const timescale = integer(attr(segmentBases, 'timescale'), 'SegmentBase@timescale', 1, 1);
+  const offset = integer(attr(segmentBases, 'presentationTimeOffset'), 'SegmentBase@presentationTimeOffset', 0);
+  const initializationRange = initialization.getAttribute('range');
+  if (initializationRange === null && !initialization.getAttribute('sourceURL')) {
+    fail('SegmentBase Initialization requires a range or sourceURL');
+  }
+  return {
+    initializationUrl: url(initialization.getAttribute('sourceURL') ?? '', base),
+    ...(initializationRange !== null ? {initializationByteRange: byteRange(initializationRange, 'Initialization@range')} : {}),
+    presentationTimeOffset: offset / timescale,
+    segmentBase: {indexRange, mediaUrl: base},
+    segments: [],
+  };
+}
+
+function parseSegmentTemplate(templates: Element[], base: string, id: string, bandwidth: number, periodDuration: number): DashAddressing {
   if (!templates.length) {
-    return fail('SegmentTemplate is required; SegmentBase and SegmentList are not supported');
+    return fail('SegmentTemplate or SegmentBase is required; SegmentList is not supported');
   }
   const media = attr(templates, 'media');
   const initialization = attr(templates, 'initialization');
@@ -237,43 +325,14 @@ function parseRendition(path: Element[], manifestUrl: string, periodDuration: nu
   if (!segments.length) {
     fail('representation contains no playable segments');
   }
-  const frameRateValue = attr(path, 'frameRate');
-  let frameRate: number | undefined;
-  if (frameRateValue) {
-    const match = /^(\d+(?:\.\d+)?)(?:\/(\d+))?$/.exec(frameRateValue);
-    frameRate = match ? Number(match[1]) / Number(match[2] ?? 1) : NaN;
-    if (!Number.isFinite(frameRate) || frameRate <= 0) {
-      fail('invalid frameRate');
-    }
-  }
-  const channelElement = path.flatMap((element) => children(element, 'AudioChannelConfiguration')).at(-1);
-  const channels = channelElement?.getAttribute('schemeIdUri') === 'urn:mpeg:dash:23003:3:audio_channel_configuration:2011' ? (channelElement.getAttribute('value') ?? undefined) : undefined;
-  const language = attr(path, 'lang');
   return {
-    type,
-    id,
-    bandwidth,
-    codecs,
-    width: attr(path, 'width') === undefined ? undefined : integer(attr(path, 'width'), 'width', undefined, 1),
-    height: attr(path, 'height') === undefined ? undefined : integer(attr(path, 'height'), 'height', undefined, 1),
-    frameRate,
-    language,
-    label:
-      path
-        .flatMap((element) => children(element, 'Label'))
-        .at(-1)
-        ?.textContent?.trim() ||
-      language ||
-      id ||
-      `${type} ${index + 1}`,
-    channels,
     initializationUrl: url(expandTemplate(initialization, id, bandwidth), base),
     presentationTimeOffset: offset / timescale,
     segments,
   };
 }
 
-/** Converts the supported static DASH subset without fetching or rewriting media segments. */
+/** Parses static DASH addressing; SegmentBase indexes are resolved before writing playlists. */
 export function parseDashManifest(xml: string, manifestUrl: string): DashManifest {
   const document = new DOMParser().parseFromString(xml, 'application/xml');
   const mpd = document.documentElement;
@@ -283,7 +342,7 @@ export function parseDashManifest(xml: string, manifestUrl: string): DashManifes
   if ((mpd.getAttribute('type') ?? 'static') !== 'static') {
     fail('live/dynamic MPDs are not supported');
   }
-  for (const name of ['ContentProtection', 'SegmentBase', 'SegmentList', 'ContentComponent', 'SubRepresentation', 'EssentialProperty']) {
+  for (const name of ['ContentProtection', 'SegmentList', 'ContentComponent', 'SubRepresentation', 'EssentialProperty']) {
     if (document.getElementsByTagNameNS('*', name).length) {
       fail(`${name} is not supported`);
     }
@@ -327,10 +386,6 @@ export function parseDashManifest(xml: string, manifestUrl: string): DashManifes
       if (++videoAdaptations > 1) {
         fail('multiple video AdaptationSets are not supported');
       }
-      const reference = parsed[0]!.segments;
-      if (parsed.some(({segments}) => segments.length !== reference.length || segments.some((segment, i) => Math.abs(segment.duration - reference[i]!.duration) > 0.001))) {
-        fail('video representations must have aligned segment boundaries');
-      }
       renditions.push(...parsed);
     } else {
       // HLS exposes alternate audio tracks, not DASH's per-track representation ladder.
@@ -347,10 +402,25 @@ export function parseDashManifest(xml: string, manifestUrl: string): DashManifes
   if (audio.some((rendition) => rendition.codecs !== audio[0]!.codecs)) {
     fail('alternate audio tracks must use the same codec');
   }
-  return {duration: periodDuration, renditions};
+  const manifest = {duration: periodDuration, renditions};
+  if (!renditions.some((rendition) => rendition.segmentBase)) {
+    validateDashSegmentAlignment(manifest);
+  }
+  return manifest;
+}
+
+export function validateDashSegmentAlignment(manifest: DashManifest): void {
+  const video = manifest.renditions.filter((rendition) => rendition.type === 'video');
+  const reference = video[0]?.segments;
+  if (reference && video.some(({segments}) => segments.length !== reference.length || segments.some((segment, i) => Math.abs(segment.duration - reference[i]!.duration) > 0.001))) {
+    fail('video representations must have aligned segment boundaries');
+  }
 }
 
 export function writeDashMediaPlaylist(rendition: DashRendition): string {
+  if (!rendition.segments.length) {
+    fail('representation contains no resolved playable segments');
+  }
   const targetDuration = rendition.segments.reduce((max, segment) => Math.max(max, segment.duration), 1);
   return [
     '#EXTM3U',
@@ -358,8 +428,12 @@ export function writeDashMediaPlaylist(rendition: DashRendition): string {
     `#EXT-X-TARGETDURATION:${Math.ceil(targetDuration)}`,
     '#EXT-X-PLAYLIST-TYPE:VOD',
     '#EXT-X-MEDIA-SEQUENCE:0',
-    `#EXT-X-MAP:URI=${quote(rendition.initializationUrl)}`,
-    ...rendition.segments.flatMap((segment) => [`#EXTINF:${segment.duration.toFixed(9)},`, segment.url]),
+    `#EXT-X-MAP:URI=${quote(rendition.initializationUrl)}${rendition.initializationByteRange ? `,BYTERANGE="${rendition.initializationByteRange.length}@${rendition.initializationByteRange.offset}"` : ''}`,
+    ...rendition.segments.flatMap((segment) => [
+      `#EXTINF:${segment.duration.toFixed(9)},`,
+      ...(segment.byteRange ? [`#EXT-X-BYTERANGE:${segment.byteRange.length}@${segment.byteRange.offset}`] : []),
+      segment.url,
+    ]),
     '#EXT-X-ENDLIST',
     '',
   ].join('\n');

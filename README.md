@@ -115,9 +115,9 @@ omakasePlayer.loadMainMedia('https://my-server.com/manifest.mpd', {
 });
 ```
 
-Supported: a single static Period starting at zero, fragmented MP4 video/audio, inherited `BaseURL` and `SegmentTemplate`, duration or `SegmentTimeline` addressing (including repeats), and `$RepresentationID$`, `$Bandwidth$`, `$Number$`, and `$Time$` URL templates. Video representations must have aligned segment boundaries. Alternate audio AdaptationSets become selectable HLS audio tracks; the highest-bandwidth representation is used within each audio AdaptationSet. Playback requires browser codec support and CORS access to the MPD, initialization segments, and media segments.
+Supported: a single static Period starting at zero, fragmented MP4 video/audio, inherited `BaseURL` and `SegmentTemplate`, duration or `SegmentTimeline` addressing (including repeats), and `$RepresentationID$`, `$Bandwidth$`, `$Number$`, and `$Time$` URL templates. Single-file `SegmentBase` renditions with `indexRange` and `Initialization` are also supported: SIDX version 0/1 indexes are loaded before playback and converted to HLS byte-range playlists. The media server must honor HTTP range requests with `206 Partial Content` and allow CORS access to the MPD, indexes, initialization segments, and media segments. Video representations must have aligned segment boundaries. Alternate audio AdaptationSets become selectable HLS audio tracks; the highest-bandwidth representation is used within each audio AdaptationSet. Playback requires browser codec support.
 
-Live/dynamic MPDs, multiple Periods or video AdaptationSets, DRM, embedded subtitles, `SegmentBase`/SIDX, `SegmentList`, multiple `BaseURL` alternatives, XLink, and timeline gaps/overlaps or leading trims are rejected with an explicit load error. A finite MPD or Period duration is required. All tracks must share the same presentation-time origin; their first segment must start at their `presentationTimeOffset`. Alternate audio tracks must use the same codec.
+Live/dynamic MPDs, multiple Periods or video AdaptationSets, DRM, embedded subtitles, hierarchical SIDX references, external `RepresentationIndex`, `SegmentList`, multiple `BaseURL` alternatives, XLink, and timeline gaps/overlaps or leading trims are rejected with an explicit load error. SIDX index ranges are limited to 16 MiB. A finite MPD or Period duration is required. All tracks must share the same presentation-time origin; their first segment must start at their `presentationTimeOffset`. Alternate audio tracks must use the same codec.
 
 DASH uses `playerControllerConfig[MainMediaType.DASH].hlsConfig` on `OmakasePlayer` (`controllerConfig` on `Player`) and `player.getPlaybackEngine(MainMediaType.DASH)` for HLS engine configuration/access. Authentication uses the existing `AuthConfig`; session state retains the original MPD URL and regenerates local playlists when reloaded or detached.
 
@@ -372,6 +372,10 @@ Complete list of Audio API methods is available in API Reference Docs.
 There are two types of audio: **Main audio** and **Sidecar audio**. Main audio refers to audio source attached to main media track. Main audio tracks are embedded audio tracks loaded with main media and only single Main audio track can be active (playing) at same time. Sidecar audio tracks are loaded manually and they are independent of main media load and Main audio. Sidecar audio tracks playback is synced with main media (Main audio) playback and there can be multiple Sidecar audio tracks active (playing) at same time.
 
 Few common usages of Audio API:
+
+MOV audio sidecars can be loaded with `player.loadSidecarTrack(url, {trackType: TrackType.AUDIO})`.
+The original MOV format is preserved; playback still requires browser support for the contained audio codec.
+An HLS playlist is not an audio file and cannot be loaded with `TrackType.AUDIO`.
 
 ```javascript
 // retrieves all available audio tracks

@@ -86,6 +86,37 @@ describe('DASH to HLS bridge', () => {
     expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS="mp4a.40.2",AUDIO="audio"\naudio.m3u8');
   });
 
+  it('inherits SegmentBase attributes and initialization ranges across MPD levels', () => {
+    const xml = `<MPD mediaPresentationDuration="PT5S"><BaseURL>../assets/</BaseURL><Period>
+      <SegmentBase timescale="1000" presentationTimeOffset="2000"><Initialization sourceURL="init.mp4" range="0-99"/></SegmentBase>
+      <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401e"><SegmentBase indexRange="100-167"/>
+      <Representation id="v" bandwidth="100"><BaseURL>video.mp4</BaseURL></Representation></AdaptationSet></Period></MPD>`;
+    const rendition = parseDashManifest(xml, sourceUrl).renditions[0]!;
+    expect(rendition).toMatchObject({
+      initializationUrl: 'https://example.com/assets/init.mp4',
+      initializationByteRange: {offset: 0, length: 100},
+      presentationTimeOffset: 2,
+      segmentBase: {indexRange: {offset: 100, length: 68}, mediaUrl: 'https://example.com/assets/video.mp4'},
+      segments: [],
+    });
+    expect(() => writeDashMediaPlaylist(rendition)).toThrow(/no resolved playable segments/);
+  });
+
+  it.each(['100', '100-99', '-1-100', '0-9007199254740992'])('rejects invalid SegmentBase ranges: %s', (range) => {
+    expect(() => parseDashManifest(mpd(video(`<SegmentBase indexRange="${range}"><Initialization range="0-99"/></SegmentBase>`)), sourceUrl)).toThrow(/byte range|invalid SegmentBase/);
+  });
+
+  it.each([
+    ['missing index', '<SegmentBase><Initialization range="0-99"/></SegmentBase>', /indexRange/],
+    ['missing initialization', '<SegmentBase indexRange="100-167"/>', /Initialization/],
+    ['unbounded initialization', '<SegmentBase indexRange="100-167"><Initialization/></SegmentBase>', /range or sourceURL/],
+    ['invalid initialization range', '<SegmentBase indexRange="100-167"><Initialization range="100-99"/></SegmentBase>', /Initialization/],
+    ['external representation index', '<SegmentBase indexRange="100-167"><Initialization range="0-99"/><RepresentationIndex sourceURL="index.mp4"/></SegmentBase>', /RepresentationIndex/],
+    ['mixed addressing', template + '<SegmentBase indexRange="100-167"><Initialization range="0-99"/></SegmentBase>', /mixed/],
+  ])('explicitly rejects SegmentBase with %s', (_name, addressing, error) => {
+    expect(() => parseDashManifest(mpd(video(addressing)), sourceUrl)).toThrow(error);
+  });
+
   it.each([
     ['malformed XML', '<MPD>', /invalid MPD/],
     ['dynamic MPD', mpd(video(), 'type="dynamic"'), /live\/dynamic/],

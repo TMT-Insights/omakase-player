@@ -70,7 +70,7 @@ export class MediaFactory {
   };
 
   private static readonly TRACK_TYPE_FORMATS: Partial<Record<TrackType, readonly FileFormatType[]>> = {
-    [TrackType.AUDIO]: [FileFormatType.MP4, ...FileFormat.AUDIO.map((p) => p.type)],
+    [TrackType.AUDIO]: [FileFormatType.MP4, FileFormatType.MOV, ...FileFormat.AUDIO.map((p) => p.type)],
     [TrackType.TEXT_TRACK]: [...FileFormat.TEXT.map((p) => p.type)],
     [TrackType.MARKER_TRACK]: [FileFormatType.VTT],
     [TrackType.THUMBNAIL_TRACK]: [FileFormatType.VTT],
