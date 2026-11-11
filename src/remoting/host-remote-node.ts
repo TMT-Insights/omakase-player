@@ -25,6 +25,7 @@ import {type OmakaseTrackApiMessageChannel, OmakaseTrackApiMessageChannelBinding
 import {AlertsManagerMessageChannelBinding, type AlertsManagerMessageChannel} from './impl/alerts-manager-message-channel';
 import {type TrackUtilsMessageChannel, TrackUtilsMessageChannelBinding} from './impl/track-utils-message-channel';
 import {type TamsMainMediaSessionMessageChannel, TamsMainMediaSessionMessageChannelBinding} from './impl/tams-main-media-session-message-channel';
+import {type DashMainMediaSessionMessageChannel, DashMainMediaSessionMessageChannelBinding} from './impl/dash-main-media-session-message-channel';
 import type {OmpProvider} from '../omp-provider';
 import {type UiMessageChannel, UiMessageChannelBinding} from './impl/ui-message-channel';
 import {type LivePlaybackTrackerMessageChannel, LivePlaybackTrackerMessageChannelBinding} from './impl/live-playback-tracker-message-channel';
@@ -48,6 +49,7 @@ export class HostRemoteNode extends BaseRemoteNode {
       {messageChannelName: 'AlertsManager', messageChannel: new MessageChannel<AlertsManagerMessageChannel>(this._managedBroadcastChannel)},
       {messageChannelName: 'TrackUtils', messageChannel: new MessageChannel<TrackUtilsMessageChannel>(this._managedBroadcastChannel)},
       {messageChannelName: 'TamsMainMediaSession', messageChannel: new MessageChannel<TamsMainMediaSessionMessageChannel>(this._managedBroadcastChannel)},
+      {messageChannelName: 'DashMainMediaSession', messageChannel: new MessageChannel<DashMainMediaSessionMessageChannel>(this._managedBroadcastChannel)},
       {messageChannelName: 'Ui', messageChannel: new MessageChannel<UiMessageChannel>(this._managedBroadcastChannel)},
       {messageChannelName: 'LivePlaybackTracker', messageChannel: new MessageChannel<LivePlaybackTrackerMessageChannel>(this._managedBroadcastChannel)},
     ]);
@@ -60,6 +62,7 @@ export class HostRemoteNode extends BaseRemoteNode {
       new AlertsManagerMessageChannelBinding(this.getChannelOrFail('AlertsManager'), ompProvider),
       new TrackUtilsMessageChannelBinding(this.getChannelOrFail('TrackUtils'), ompProvider),
       new TamsMainMediaSessionMessageChannelBinding(this.getChannelOrFail('TamsMainMediaSession'), ompProvider),
+      new DashMainMediaSessionMessageChannelBinding(this.getChannelOrFail('DashMainMediaSession'), ompProvider),
       new UiMessageChannelBinding(this.getChannelOrFail('Ui'), ompProvider),
       new LivePlaybackTrackerMessageChannelBinding(this.getChannelOrFail('LivePlaybackTracker'), ompProvider, livePlaybackTracker),
     ];

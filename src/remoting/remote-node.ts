@@ -57,6 +57,7 @@ import type {ChromingMarkerBarState} from '../chroming';
 import {AlertsManagerProxy} from './impl/alerts-manager-proxy';
 import {TrackUtilsProxy} from './impl/track-utils-proxy';
 import {TamsMainMediaSessionProxy} from './impl/tams-main-media-session-proxy';
+import {DashMainMediaSessionProxy} from './impl/dash-main-media-session-proxy';
 import type {MessageChannelProxy} from './message-channel-proxy';
 import {ThumbnailTrackProxy} from './impl/thumbnail-track-proxy';
 import type {ThumbnailTrackMessageChannel} from './impl/thumbnail-track-message-channel';
@@ -337,6 +338,10 @@ export abstract class BaseRemoteNode implements RemoteNode, Destroyable {
 
       if (this._remoteMessageChannelsByName.has('TamsMainMediaSession')) {
         this._proxyByName['TamsMainMediaSession'] = new TamsMainMediaSessionProxy(this);
+      }
+
+      if (this._remoteMessageChannelsByName.has('DashMainMediaSession')) {
+        this._proxyByName['DashMainMediaSession'] = new DashMainMediaSessionProxy(this);
       }
 
       if (this._remoteMessageChannelsByName.has('PlayerAudioInternal')) {

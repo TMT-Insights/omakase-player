@@ -57,8 +57,8 @@ describe('DASH SIDX parsing', () => {
     expect(() => parseDashSegmentIndex(createSidx({earliestTime: 500}), track, 5)).toThrow(/leading trims/);
   });
 
-  it('allows an AAC-LC tail shorter than one codec frame without padding or stretching audio', () => {
-    const track: DashRendition = {...rendition(), type: 'audio', codecs: 'mp4a.40.2', audioSamplingRate: 24000};
+  it('allows an AAC-LC tail shorter than one codec frame at an inner Period boundary without padding or stretching audio', () => {
+    const track: DashRendition = {...rendition(), type: 'audio', codecs: 'mp4a.40.2', audioSamplingRate: 24000, allowsTailShortfall: false};
     const data = createSidx({timescale: 24000, references: [{size: 100, duration: 119488}]});
     const segments = parseDashSegmentIndex(data, track, 5);
     expect(segments[0]?.duration).toBe(119488 / 24000);
@@ -104,7 +104,15 @@ describe('DASH SIDX parsing', () => {
     ['unsafe 64-bit offset', () => createSidx({version: 1, firstOffset: 2 ** 53}), /64-bit/],
     ['missing SIDX', () => new ArrayBuffer(0), /no SIDX/],
   ])('explicitly rejects %s', (_name, data, error) => {
-    expect(() => parseDashSegmentIndex(data(), rendition(), 5)).toThrow(error);
+    // as at an inner Period boundary, where a track must reach the end of its Period
+    expect(() => parseDashSegmentIndex(data(), {...rendition(), allowsTailShortfall: false}, 5)).toThrow(error);
+  });
+
+  it('plays an index ending before the presentation end to its real end', () => {
+    const track = rendition();
+    expect(track.allowsTailShortfall).toBe(true);
+    const segments = parseDashSegmentIndex(createSidx({references: [{size: 100, duration: 4000}]}), track, 5);
+    expect(segments.map((segment) => segment.duration)).toEqual([4]);
   });
 });
 

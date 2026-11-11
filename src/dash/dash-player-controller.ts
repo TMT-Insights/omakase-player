@@ -14,36 +14,38 @@
  * limitations under the License.
  */
 
-import {combineLatest, defer, finalize, from, map, type Observable, of, switchMap, take, takeUntil, tap} from 'rxjs';
-import {fromFetch} from 'rxjs/fetch';
+import {combineLatest, defer, finalize, firstValueFrom, map, type Observable, of, switchMap, take, takeUntil, tap} from 'rxjs';
 import type {HlsConfig} from 'hls.js';
 import {HlsPlayerController, type HlsPlayerControllerConfig} from '../hls/hls-player-controller';
 import {SyntheticManifestLoader} from '../hls/synthetic-manifest-loader';
-import {SyntheticManifestRegistry, type SyntheticManifestResolver} from '../hls/synthetic-manifest-registry';
+import {SyntheticManifestRegistry} from '../hls/synthetic-manifest-registry';
 import type {LoadMainMediaArgsType, PlayerDomController} from '../player/player-controller-api';
-import {AuthConfig} from '../common/authentication';
 import {ObserverBreaker} from '../common/observer-breaker';
 import {BlobUtil} from '../util/blob-util';
 import {OmpError} from '../types';
-import {type DashSegment, dashSegmentsAligned, parseDashManifest, planDashTracks, writeDashMasterPlaylist, writeDashMediaPlaylist} from './dash-manifest';
-import {createDashIndexBudget, resolveDashTrack} from './dash-segment-index';
 import {loadDashAuxiliaryTracks} from './dash-auxiliary';
+import {dashPlaylistDuration, resolveDashTailShortfall} from './dash-manifest';
+import {type DashMainMediaSession, type DashMainMediaSessionState, isDashMainMediaSession} from './dash-main-media-session';
+import {DashPreparedMedia} from './dash-prepared-media';
 
-/** Origin of the synthetic playlist URLs served by {@link SyntheticManifestLoader}. */
-export const DASH_SYNTHETIC_ORIGIN = 'https://dash.omakase.local';
+export {DASH_SYNTHETIC_ORIGIN} from './dash-prepared-media';
 
 /**
  * Bridges a static MPD to HLS; the original MPD remains the source in serialized media state.
  *
- * Media playlists are built lazily: a track's indexes are only fetched when hls.js asks for its
- * playlist, so an ABR ladder costs one index request per rendition actually played. The initial
- * video and audio playlists are resolved alongside the hls.js load, so their errors still fail it.
+ * The bridged playlists come from the media's {@link DashMainMediaSession}: the session controller
+ * in the window that owns the media, or a remote to it from a detached window, which then neither
+ * fetches the MPD nor builds playlists itself. Without a session the controller prepares the media
+ * on its own. Media playlists are built lazily; the initial video and audio ones are resolved
+ * alongside the hls.js load, so that their errors still fail it.
  */
 export class DashPlayerController extends HlsPlayerController {
   private readonly _dashLoadBreaker = new ObserverBreaker();
-  private _playlistUrls: string[] = [];
+  /** Media prepared by this controller, when there is no session to own it. */
+  private _ownMedia: DashPreparedMedia | undefined;
+  /** Playlists copied from a session in another window. */
+  private _adoptedUrls: string[] = [];
   private _pendingAuxiliaryUrls: string[] = [];
-  private _indexAbort: AbortController | undefined;
 
   constructor(playerDomController: PlayerDomController, config?: Partial<HlsPlayerControllerConfig>) {
     super(playerDomController, {
@@ -61,58 +63,33 @@ export class DashPlayerController extends HlsPlayerController {
       this._loadBreaker.break();
       this.destroyHls();
       this.unwireEvents();
-      this.releasePlaylists();
-      if (!args.url) {
-        throw new OmpError('DASH: MPD URL not provided');
-      }
-      const sourceUrl = new URL(args.url, document.baseURI).href;
+      this.release();
+      const session = isDashMainMediaSession(args.mainMediaSessionController) ? args.mainMediaSessionController : undefined;
+      const mainMediaId = args.providedMainMedia?.id;
       let loaded = false;
-      return fromFetch(sourceUrl, {
-        ...AuthConfig.createRequestInit(sourceUrl, AuthConfig.authentication),
-        selector: (response) => {
-          if (!response.ok) {
-            throw new OmpError(`DASH: HTTP ${response.status} ${response.statusText} for ${sourceUrl}`);
-          }
-          return from(response.text()).pipe(map((xml) => parseDashManifest(xml, response.url || sourceUrl)));
-        },
-      }).pipe(
-        switchMap((manifest) => {
-          const indexAbort = (this._indexAbort = new AbortController());
-          const budget = createDashIndexBudget();
-          const plans = planDashTracks(manifest);
-          let alignment: DashSegment[] | undefined;
-          const playlistUrls = plans.map((plan) =>
-            this.registerPlaylist(async () => {
-              const track = await resolveDashTrack(plan, indexAbort.signal, budget);
-              if (track.type === 'video') {
-                // checked per resolved level, as levels are no longer resolved together
-                if (alignment && !dashSegmentsAligned(track.segments, alignment)) {
-                  throw new OmpError('DASH: video representations must have aligned segment boundaries');
-                }
-                alignment ??= track.segments;
-              }
-              return writeDashMediaPlaylist(track);
-            })
-          );
-          const heads = plans.map((plan) => plan.head);
-          const masterUrl = this.registerPlaylist(writeDashMasterPlaylist(heads, playlistUrls));
-          const initialUrls = [heads.findIndex((track) => track.type === 'video'), heads.findIndex((track) => track.type === 'audio')]
-            .filter((index) => index >= 0)
-            .map((index) => playlistUrls[index]!);
+      return this.resolveSessionState(args, session, mainMediaId).pipe(
+        switchMap((state) => {
+          this.adoptPlaylists(state, session, mainMediaId);
+          // the duration hls.js reads once the initial playlists are in (see applyTailShortfall)
+          const loadOptions = {...args.loadOptions, duration: args.loadOptions?.duration ?? state.duration};
           // hls.js requests the same playlists and joins these resolutions rather than repeating them
-          const initial$ = defer(() => Promise.all(initialUrls.map((url) => SyntheticManifestRegistry.resolve(url)!)));
-          const restoringAuxiliary = args.providedMainMedia?.tracks.some((track) => track.customAttrs?.['dashAuxiliary'] === true);
-          const auxiliary$ = restoringAuxiliary
-            ? of([])
-            : loadDashAuxiliaryTracks(manifest, (data, mime) => {
-                const url = BlobUtil.createBlobURL(data, {type: mime});
-                this._pendingAuxiliaryUrls.push(url);
-                return url;
-              });
+          const initial$ = defer(() =>
+            Promise.all(state.initialPlaylists.map(({url}) => SyntheticManifestRegistry.resolve(url) ?? Promise.reject(new OmpError(`DASH: playlist ${url} is not registered`))))
+          ).pipe(tap((playlists) => this.applyTailShortfall(args, state, playlists, loadOptions)));
+          // tracks restored with the media (a reload, or another window) already own their resources
+          const hasAuxiliaryTracks = args.providedMainMedia?.tracks.some((track) => track.customAttrs?.['dashAuxiliary'] === true);
+          const auxiliary$ =
+            hasAuxiliaryTracks || !state.auxiliary
+              ? of([])
+              : loadDashAuxiliaryTracks(state.auxiliary, (data, mime) => {
+                  const url = BlobUtil.createBlobURL(data, {type: mime});
+                  this._pendingAuxiliaryUrls.push(url);
+                  return url;
+                });
           const hls$ = super.loadMainMedia({
             ...args,
-            url: masterUrl,
-            loadOptions: {...args.loadOptions, duration: args.loadOptions?.duration ?? manifest.duration},
+            url: state.masterUrl,
+            loadOptions,
           });
           // playback starts buffering while auxiliary tracks load; they are added before the load
           // completes so that the player preloads them like any other main-media text track
@@ -136,36 +113,92 @@ export class DashPlayerController extends HlsPlayerController {
         finalize(() => {
           if (!loaded) {
             this.destroyHls();
-            this.releasePlaylists();
+            this.release();
           }
         })
       );
     });
   }
 
-  private registerPlaylist(content: string | SyntheticManifestResolver): string {
-    const url = SyntheticManifestRegistry.createUrl(DASH_SYNTHETIC_ORIGIN);
-    if (typeof content === 'string') {
-      SyntheticManifestRegistry.register(url, content);
-    } else {
-      SyntheticManifestRegistry.registerLazy(url, content);
+  /**
+   * Warns when tracks end before the duration the MPD declares, and when they all do, makes the
+   * player's duration where the media really ends, so that playback, seeking to the end and the end
+   * of the timeline agree with the media instead of waiting for time that does not exist.
+   *
+   * `loadOptions` is the object handed to hls.js; it reads the duration only after the initial
+   * playlists have been loaded, which is after these resolutions (it joins them).
+   */
+  private applyTailShortfall(args: LoadMainMediaArgsType, state: DashMainMediaSessionState, playlists: string[], loadOptions: {duration?: number | string | undefined}): void {
+    // a restored media already carries the corrected duration, and was warned about when first loaded
+    if (args.providedMainMedia?.duration !== undefined || args.loadOptions?.duration !== undefined) {
+      return;
     }
-    this._playlistUrls.push(url);
-    return url;
+    const shortfall = resolveDashTailShortfall(
+      state.duration,
+      state.initialPlaylists.map(({type}, index) => ({type, end: dashPlaylistDuration(playlists[index]!)}))
+    );
+    if (!shortfall) {
+      return;
+    }
+    loadOptions.duration = shortfall.duration;
+    console.warn(shortfall.message);
+    args.warningHook?.(shortfall.message);
   }
 
-  private releasePlaylists(): void {
-    this._indexAbort?.abort();
-    this._indexAbort = undefined;
-    this._playlistUrls.forEach((url) => SyntheticManifestRegistry.clear(url));
+  private resolveSessionState(args: LoadMainMediaArgsType, session: DashMainMediaSession | undefined, mainMediaId: string | undefined): Observable<DashMainMediaSessionState> {
+    if (session && mainMediaId) {
+      return session.getSessionState(mainMediaId).pipe(
+        map((state) => {
+          if (!state) {
+            throw new OmpError(`DASH media has no prepared session in the window that owns it`);
+          }
+          return state;
+        })
+      );
+    }
+    if (!args.url) {
+      throw new OmpError('DASH: MPD URL not provided');
+    }
+    return DashPreparedMedia.load(args.url).pipe(
+      map((media) => {
+        this._ownMedia = media;
+        return media.state;
+      })
+    );
+  }
+
+  /**
+   * Makes a session's playlists playable in this window. The owning window has them registered
+   * already; another window registers the built ones and asks the owner for the rest when used.
+   */
+  private adoptPlaylists(state: DashMainMediaSessionState, session: DashMainMediaSession | undefined, mainMediaId: string | undefined): void {
+    if (SyntheticManifestRegistry.has(state.masterUrl) || !session || !mainMediaId) {
+      return;
+    }
+    for (const url of [state.masterUrl, ...state.playlistUrls]) {
+      const content = state.manifests[url];
+      if (content !== undefined) {
+        SyntheticManifestRegistry.register(url, content);
+      } else {
+        SyntheticManifestRegistry.registerLazy(url, () => firstValueFrom(session.resolvePlaylist(mainMediaId, url)));
+      }
+      this._adoptedUrls.push(url);
+    }
+  }
+
+  /** Releases what this controller registered or created; a session's own playlists stay with it. */
+  private release(): void {
+    this._ownMedia?.release();
+    this._ownMedia = undefined;
+    this._adoptedUrls.forEach((url) => SyntheticManifestRegistry.clear(url));
+    this._adoptedUrls = [];
     this._pendingAuxiliaryUrls.forEach((url) => BlobUtil.revokeObjectURL(url));
-    this._playlistUrls = [];
     this._pendingAuxiliaryUrls = [];
   }
 
   override destroy(): void {
     this._dashLoadBreaker.destroy();
     super.destroy();
-    this.releasePlaylists();
+    this.release();
   }
 }

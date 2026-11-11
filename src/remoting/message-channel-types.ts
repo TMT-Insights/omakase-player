@@ -36,6 +36,7 @@ import type {ChromingMarkerBarHandlerMessageChannel} from './impl/chroming-marke
 import type {AlertsManagerMessageChannel} from './impl/alerts-manager-message-channel';
 import type {TrackUtilsMessageChannel} from './impl/track-utils-message-channel';
 import type {TamsMainMediaSessionMessageChannel} from './impl/tams-main-media-session-message-channel';
+import type {DashMainMediaSessionMessageChannel} from './impl/dash-main-media-session-message-channel';
 import type {ThumbnailTrackMessageChannel} from './impl/thumbnail-track-message-channel';
 import type {UiMessageChannel} from './impl/ui-message-channel';
 import type {LivePlaybackTrackerMessageChannel} from './impl/live-playback-tracker-message-channel';
@@ -52,6 +53,7 @@ export type MessageChannelTypeMap = {
   OmakaseTrackApi: OmakaseTrackApiMessageChannel;
   TrackUtils: TrackUtilsMessageChannel;
   TamsMainMediaSession: TamsMainMediaSessionMessageChannel;
+  DashMainMediaSession: DashMainMediaSessionMessageChannel;
 
   MainMedia: MainMediaMessageChannel;
   Track: TrackMessageChannel;

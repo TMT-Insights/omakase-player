@@ -149,7 +149,8 @@ function clipSegments(segments: DashSegment[], rendition: DashRendition, periodD
     elapsed += segment.duration;
     return duration > 0 ? [{...segment, duration}] : [];
   });
-  if (!rendition.auxiliary && elapsed < periodDuration - tolerance) {
+  // a track may end short of the presentation (see DashRendition.allowsTailShortfall), never of an inner boundary
+  if (!rendition.auxiliary && !rendition.allowsTailShortfall && elapsed < periodDuration - tolerance) {
     return fail('SIDX does not cover the Period duration');
   }
   return clipped;
@@ -404,14 +405,20 @@ export async function resolveDashRendition(rendition: DashRendition, duration: n
       resolved.initializationByteRange = boxes.initialization;
       delete resolved.discoverInitialization;
     }
-    const resolvedSegments = await mapLimit(rendition.segments, INDEX_CONCURRENCY, async (segment): Promise<DashSegment[]> => {
+    const lastSegment = rendition.segments.length - 1;
+    const resolvedSegments = await mapLimit(rendition.segments, INDEX_CONCURRENCY, async (segment, segmentIndex): Promise<DashSegment[]> => {
       if (!segment.index) {
         return [segment];
       }
       const segmentStart = segment.presentationTime ?? 0;
       const indexed = await resolveIndex(
         segment.index,
-        {...rendition, presentationTimeOffset: rendition.auxiliary ? rendition.presentationTimeOffset + segmentStart : 0},
+        {
+          ...rendition,
+          presentationTimeOffset: rendition.auxiliary ? rendition.presentationTimeOffset + segmentStart : 0,
+          // only the final segment ends the presentation; a short one before it would leave a gap
+          allowsTailShortfall: !!rendition.allowsTailShortfall && segmentIndex === lastSegment,
+        },
         segment.url,
         segment.duration,
         signal,

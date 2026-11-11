@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import {describe, expect, it} from 'vitest';
-import {parseDashManifest, writeDashMasterPlaylist, writeDashMediaPlaylist} from '../../src/dash/dash-manifest';
+import {dashPlaylistDuration, parseDashManifest, resolveDashTailShortfall, writeDashMasterPlaylist, writeDashMediaPlaylist} from '../../src/dash/dash-manifest';
 
 const sourceUrl = 'https://example.com/media/manifest.mpd';
 const representation = (id = 'v1', bandwidth = 1000000) => `<Representation id="${id}" bandwidth="${bandwidth}" width="640" height="360"/>`;
@@ -8,6 +8,9 @@ const template = '<SegmentTemplate timescale="1000" duration="2000" initializati
 const video = (segmentTemplate = template, representations = representation()) =>
   `<AdaptationSet mimeType="video/mp4" codecs="avc1.4d401e" frameRate="30000/1001">${segmentTemplate}${representations}</AdaptationSet>`;
 const mpd = (adaptations = video(), attributes = '') => `<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT5S" ${attributes}><Period>${adaptations}</Period></MPD>`;
+/** The adaptations in a first Period that ends at an inner boundary, followed by a regular one. */
+const innerPeriod = (adaptations: string) => `<MPD mediaPresentationDuration="PT10S"><Period duration="PT5S">${adaptations}</Period><Period duration="PT5S">${video()}</Period></MPD>`;
+const shortTimeline = '<SegmentTemplate initialization="i.mp4" media="$Time$.m4s"><SegmentTimeline><S d="1"/></SegmentTimeline></SegmentTemplate>';
 
 describe('DASH to HLS bridge', () => {
   it('expands duration templates, startNumber, padding and a shortened final segment', () => {
@@ -150,9 +153,50 @@ describe('DASH to HLS bridge', () => {
     ['non-HTTP media', mpd(video().replace(template, '<BaseURL>data:video/mp4;base64,abc</BaseURL>' + template)), /HTTP/],
     ['different video adaptations', mpd(video() + video()), /multiple video/],
     ['leading trim', mpd(video(template.replace('duration="2000"', 'duration="2000" presentationTimeOffset="100"'))), /first segment/],
-    ['incomplete timeline', mpd(video('<SegmentTemplate initialization="i.mp4" media="$Time$.m4s"><SegmentTimeline><S d="1"/></SegmentTimeline></SegmentTemplate>')), /does not cover/],
+    ['an incomplete timeline at an inner Period boundary', innerPeriod(video(shortTimeline)), /does not cover/],
     ['timeline gap', mpd(video('<SegmentTemplate initialization="i.mp4" media="$Time$.m4s"><SegmentTimeline><S d="1"/><S t="2" d="3"/></SegmentTimeline></SegmentTemplate>')), /gaps and overlaps/],
   ])('explicitly rejects %s', (_name, xml, error) => {
     expect(() => parseDashManifest(xml, sourceUrl)).toThrow(error);
+  });
+
+  it('accepts audio/video ending before the presentation end, and plays them to their real end', () => {
+    const rendition = parseDashManifest(mpd(video(shortTimeline)), sourceUrl).renditions[0]!;
+    expect(rendition.allowsTailShortfall).toBe(true);
+    expect(rendition.segments.map((segment) => segment.duration)).toEqual([1]);
+    expect(writeDashMediaPlaylist(rendition)).toContain('#EXTINF:1,');
+  });
+});
+
+describe('DASH tail shortfall', () => {
+  it('reads where a playlist ends', () => {
+    expect(dashPlaylistDuration('#EXTM3U\n#EXTINF:2,\na\n#EXTINF:1.5,\nb\n#EXT-X-ENDLIST\n')).toBe(3.5);
+  });
+
+  it('shortens the duration only when every track ends early', () => {
+    expect(
+      resolveDashTailShortfall(10, [
+        {type: 'video', end: 9.5},
+        {type: 'audio', end: 9.8},
+      ])
+    ).toEqual({duration: 9.8, message: expect.stringMatching(/ends at 9\.800 s, 0\.200 s before the 10\.000 s/)});
+    expect(
+      resolveDashTailShortfall(10, [
+        {type: 'video', end: 9.947},
+        {type: 'audio', end: 10},
+      ])
+    ).toEqual({
+      duration: 10,
+      message: expect.stringMatching(/video track ends 0\.053 s early \(its last frame is held/),
+    });
+  });
+
+  it('ignores exact coverage and audio short by less than a codec frame', () => {
+    expect(
+      resolveDashTailShortfall(10, [
+        {type: 'video', end: 10},
+        {type: 'audio', end: 9.98},
+      ])
+    ).toBeUndefined();
+    expect(resolveDashTailShortfall(10, [{type: 'video', end: 9.9995}])).toBeUndefined();
   });
 });

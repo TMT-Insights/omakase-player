@@ -108,4 +108,10 @@ describe('DASH media integration', () => {
     expect(PlayerInternalUtil.resolveMainTextTrackHandler(ttml, PlayerTextHandlerType.MEDIA_CAPTIONS)).toBe(PlayerTextHandlerType.IMSC);
     expect(PlayerInternalUtil.resolveMainTextTrackHandler(vtt, PlayerTextHandlerType.MEDIA_CAPTIONS)).toBe(PlayerTextHandlerType.MEDIA_CAPTIONS);
   });
+
+  it('keeps the source file format when HLS media state is serialized and restored', async () => {
+    const hls = await firstValueFrom(MediaFactory.createMainMedia(UrlSource.of('https://example.com/main.m3u8'), {fileFormatType: FileFormatType.HLS}));
+    expect(hls.state.sourceFileFormatType).toBe(FileFormatType.HLS);
+    expect(MediaDeserializer.createMainMedia(hls.state).state.sourceFileFormatType).toBe(FileFormatType.HLS);
+  });
 });

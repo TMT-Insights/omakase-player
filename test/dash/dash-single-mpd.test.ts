@@ -51,10 +51,12 @@ describe('single-MPD segment addressing', () => {
     expect(parseDashManifest(xml, source).renditions[0]!.segments[0]!.url).toBe('https://example.com/a.m4s');
   });
 
-  it('supports inclusive endNumber and rejects a template that ends before the Period', () => {
+  it('supports inclusive endNumber, plays a template ending before the presentation end, and rejects one ending before an inner boundary', () => {
     const addressing = template.replace('duration="2"', 'duration="2" startNumber="7" endNumber="8"');
     expect(parseDashManifest(mpd(period(video(addressing))), source).renditions[0]!.segments.map((segment) => segment.url)).toEqual(['https://example.com/7.m4s', 'https://example.com/8.m4s']);
-    expect(() => parseDashManifest(mpd(period(video(addressing.replace('endNumber="8"', 'endNumber="7"')))), source)).toThrow(/cover/);
+    const short = addressing.replace('endNumber="8"', 'endNumber="7"');
+    expect(parseDashManifest(mpd(period(video(short))), source).renditions[0]!.segments.map((segment) => segment.url)).toEqual(['https://example.com/7.m4s']);
+    expect(() => parseDashManifest(mpd(period(video(short), 'duration="PT4S"') + period(video(), 'duration="PT4S"'), 8), source)).toThrow(/cover/);
   });
 
   it('supports Initialization elements and ranges in SegmentTemplate', () => {

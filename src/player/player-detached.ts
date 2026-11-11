@@ -528,6 +528,7 @@ export class PlayerDetached implements PlayerDetachedApi, Destroyable {
                       mainMediaEssentialArgsHook,
                       tracksCreatedHook,
                       mainMediaSessionController: this._mainMediaSessionRemote,
+                      warningHook: (message) => this._alertsManager?.warn(message).subscribe(),
                     })
                     .pipe(takeUntil(this._loadMainMediaBreaker.observer))
                     .subscribe({

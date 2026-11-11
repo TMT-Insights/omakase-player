@@ -377,4 +377,52 @@ describe('DashPlayerController', () => {
     expect(fetchMock.mock.calls[1]![1]!.signal!.aborted).toBe(true);
     urls.forEach((url) => expect(SyntheticManifestRegistry.has(url)).toBe(false));
   });
+
+  describe('when tracks end before the declared presentation end', () => {
+    const timeline = (seconds: number) =>
+      `<SegmentTemplate timescale="1" initialization="init.mp4" media="$Time$.m4s"><SegmentTimeline><S t="0" d="1" r="${seconds - 1}"/></SegmentTimeline></SegmentTemplate>`;
+    const shortXml = (videoSeconds: number, audioSeconds?: number) =>
+      `<MPD mediaPresentationDuration="PT4S"><Period>
+        <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401e">${timeline(videoSeconds)}<Representation id="v" bandwidth="1000000"/></AdaptationSet>
+        ${audioSeconds === undefined ? '' : `<AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2" lang="en">${timeline(audioSeconds)}<Representation id="a" bandwidth="64000"/></AdaptationSet>`}
+      </Period></MPD>`;
+    let warn: MockInstance<typeof console.warn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    it('warns and ends playback where the media really ends when every track ends early', async () => {
+      fetchMock.mockResolvedValue(new Response(shortXml(3, 3)));
+      const warningHook = vi.fn();
+      await expect(firstValueFrom(controller.loadMainMedia({...args, loadOptions: {}, warningHook}))).resolves.toBe(true);
+      // hls.js reads the duration from this object once the initial playlists are in
+      expect(loadHls.mock.calls[0]![0].loadOptions.duration).toBe(3);
+      expect(warningHook).toHaveBeenCalledWith(expect.stringMatching(/media ends at 3\.000 s, 1\.000 s before the 4\.000 s the MPD declares/));
+      expect(warn).toHaveBeenCalledWith(warningHook.mock.calls[0]![0]);
+    });
+
+    it('keeps the declared duration and names the short track when another track reaches the end', async () => {
+      fetchMock.mockResolvedValue(new Response(shortXml(3, 4)));
+      const warningHook = vi.fn();
+      await firstValueFrom(controller.loadMainMedia({...args, loadOptions: {}, warningHook}));
+      expect(loadHls.mock.calls[0]![0].loadOptions.duration).toBe(4);
+      expect(warningHook).toHaveBeenCalledWith(expect.stringMatching(/video track ends 1\.000 s early/));
+    });
+
+    it('neither warns nor changes the duration when the media was already loaded once', async () => {
+      fetchMock.mockResolvedValue(new Response(shortXml(3, 3)));
+      const warningHook = vi.fn();
+      const providedMainMedia = {...new DashMainMedia({source: new UrlSource(args.url!)}).state, duration: 3};
+      await firstValueFrom(controller.loadMainMedia({...args, loadOptions: {}, providedMainMedia, warningHook}));
+      expect(warningHook).not.toHaveBeenCalled();
+    });
+
+    it('does not warn when the media covers the declared duration', async () => {
+      fetchMock.mockResolvedValue(new Response(shortXml(4, 4)));
+      const warningHook = vi.fn();
+      await firstValueFrom(controller.loadMainMedia({...args, loadOptions: {}, warningHook}));
+      expect(warningHook).not.toHaveBeenCalled();
+      expect(loadHls.mock.calls[0]![0].loadOptions.duration).toBe(4);
+    });
+  });
 });

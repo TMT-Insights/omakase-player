@@ -58,6 +58,12 @@ export interface DashRendition {
   trackKey?: string;
   presentationTimeOffset: number;
   segments: DashSegment[];
+  /**
+   * Set on audio/video renditions of the final Period: their media may end before the declared
+   * presentation end (encoders commonly stop a frame or two early). Such a track is played to its
+   * real end, and the player warns about it, instead of the MPD being rejected.
+   */
+  allowsTailShortfall?: boolean;
   auxiliary?: {
     format: 'vtt' | 'ttml' | 'wvtt' | 'stpp' | 'image';
     kind: 'subtitles' | 'captions';
@@ -192,10 +198,11 @@ function expandTemplate(template: string, id: string, bandwidth: number, number?
   });
 }
 
-function parseRendition(path: Element[], manifestUrl: string, periodDuration: number, type: DashRendition['type'], index: number): DashRendition {
+function parseRendition(path: Element[], manifestUrl: string, periodDuration: number, type: DashRendition['type'], index: number, endsPresentation = false): DashRendition {
   const representation = path[path.length - 1]!;
   const id = representation.getAttribute('id') ?? '';
   const isAuxiliary = type === 'text' || type === 'image';
+  const allowsTailShortfall = endsPresentation && !isAuxiliary;
   const bandwidth = integer(attr(path, 'bandwidth'), 'bandwidth', isAuxiliary ? 1 : undefined, 1);
   const codecs = attr(path, 'codecs') ?? (isAuxiliary ? '' : undefined);
   if ((!codecs && !isAuxiliary) || codecs?.includes(',')) {
@@ -252,9 +259,9 @@ function parseRendition(path: Element[], manifestUrl: string, periodDuration: nu
   }
   const addressing =
     addressingName === 'SegmentTemplate'
-      ? parseSegmentTemplate(addressingElements, base, id, bandwidth, periodDuration, raw, isAuxiliary)
+      ? parseSegmentTemplate(addressingElements, base, id, bandwidth, periodDuration, raw, isAuxiliary, allowsTailShortfall)
       : addressingName === 'SegmentList'
-        ? parseSegmentList(addressingElements, base, periodDuration, raw, isAuxiliary)
+        ? parseSegmentList(addressingElements, base, periodDuration, raw, isAuxiliary, allowsTailShortfall)
         : raw
           ? {
               initializationUrl: '',
@@ -308,6 +315,7 @@ function parseRendition(path: Element[], manifestUrl: string, periodDuration: nu
         : 'video',
     audioSamplingRate: attr(path, 'audioSamplingRate') === undefined ? undefined : integer(attr(path, 'audioSamplingRate'), 'audioSamplingRate', undefined, 1),
     ...addressing,
+    ...(allowsTailShortfall ? {allowsTailShortfall} : {}),
     ...(isAuxiliary
       ? {
           auxiliary: {
@@ -371,7 +379,13 @@ function parseSegmentBase(segmentBases: Element[], base: string): DashAddressing
   };
 }
 
-function segmentTiming(elements: Element[], periodDuration: number, listLength?: number, auxiliary = false): {time: number; duration: number; mediaDuration: number; number: number}[] {
+function segmentTiming(
+  elements: Element[],
+  periodDuration: number,
+  listLength?: number,
+  auxiliary = false,
+  allowsTailShortfall = false
+): {time: number; duration: number; mediaDuration: number; number: number}[] {
   const timescale = integer(attr(elements, 'timescale'), 'timescale', 1, 1);
   const offset = integer(attr(elements, 'presentationTimeOffset'), 'presentationTimeOffset', 0);
   const startNumber = integer(attr(elements, 'startNumber'), 'startNumber', 1);
@@ -428,7 +442,7 @@ function segmentTiming(elements: Element[], periodDuration: number, listLength?:
       }
       cursor = time + count * length;
     }
-    if (!auxiliary && cursor < end - 0.001 * timescale) {
+    if (!auxiliary && !allowsTailShortfall && cursor < end - 0.001 * timescale) {
       fail('SegmentTimeline does not cover the Period duration');
     }
   } else {
@@ -449,13 +463,13 @@ function segmentTiming(elements: Element[], periodDuration: number, listLength?:
     fail('representation contains no playable segments');
   }
   const coverage = segments.reduce((total, segment) => total + segment.duration, 0);
-  if (!auxiliary && coverage < periodDuration - 0.001) {
+  if (!auxiliary && !allowsTailShortfall && coverage < periodDuration - 0.001) {
     fail('segment addressing does not cover the Period duration');
   }
   return segments;
 }
 
-function parseSegmentTemplate(templates: Element[], base: string, id: string, bandwidth: number, periodDuration: number, raw = false, auxiliary = false): DashAddressing {
+function parseSegmentTemplate(templates: Element[], base: string, id: string, bandwidth: number, periodDuration: number, raw = false, auxiliary = false, allowsTailShortfall = false): DashAddressing {
   const media = attr(templates, 'media');
   const initialization = attr(templates, 'initialization');
   const initializationElement = templates.map((element) => single(element, 'Initialization')).findLast((element) => element !== undefined);
@@ -469,7 +483,7 @@ function parseSegmentTemplate(templates: Element[], base: string, id: string, ba
   const indexRange = attr(templates, 'indexRange');
   const timescale = integer(attr(templates, 'timescale'), 'timescale', 1, 1);
   const offset = integer(attr(templates, 'presentationTimeOffset'), 'presentationTimeOffset', 0);
-  const segments = segmentTiming(templates, periodDuration, undefined, auxiliary).map(({time, duration, mediaDuration, number}) => ({
+  const segments = segmentTiming(templates, periodDuration, undefined, auxiliary, allowsTailShortfall).map(({time, duration, mediaDuration, number}) => ({
     url: url(expandTemplate(media, id, bandwidth, number, time), base),
     duration,
     ...(raw ? {mediaDuration} : {}),
@@ -497,12 +511,12 @@ function parseSegmentTemplate(templates: Element[], base: string, id: string, ba
   };
 }
 
-function parseSegmentList(lists: Element[], base: string, periodDuration: number, raw = false, auxiliary = false): DashAddressing {
+function parseSegmentList(lists: Element[], base: string, periodDuration: number, raw = false, auxiliary = false, allowsTailShortfall = false): DashAddressing {
   const urls = lists.map((element) => children(element, 'SegmentURL')).findLast((elements) => elements.length) ?? [];
   if (!urls.length) {
     return fail('SegmentList requires SegmentURL entries');
   }
-  const timing = segmentTiming(lists, periodDuration, urls.length, auxiliary);
+  const timing = segmentTiming(lists, periodDuration, urls.length, auxiliary, allowsTailShortfall);
   const timescale = integer(attr(lists, 'timescale'), 'timescale', 1, 1);
   const offset = integer(attr(lists, 'presentationTimeOffset'), 'presentationTimeOffset', 0);
   if (timing.length !== urls.length) {
@@ -603,7 +617,7 @@ export function parseDashManifest(xml: string, manifestUrl: string): DashManifes
   const allPeriods = periodElements.map((period, index) => ({
     start: starts[index]!,
     duration: durations[index]!,
-    renditions: parsePeriodRenditions(mpd, period, manifestUrl, durations[index]!),
+    renditions: parsePeriodRenditions(mpd, period, manifestUrl, durations[index]!, index === periodElements.length - 1),
   }));
   const periods = allPeriods.map((period) => ({...period, renditions: period.renditions.filter((rendition) => rendition.type === 'video' || rendition.type === 'audio')}));
   const auxiliaryPeriods = allPeriods.map((period) => ({...period, start: period.start - presentationStart, renditions: period.renditions.filter((rendition) => rendition.auxiliary)}));
@@ -616,7 +630,7 @@ export function parseDashManifest(xml: string, manifestUrl: string): DashManifes
   };
 }
 
-function parsePeriodRenditions(mpd: Element, period: Element, manifestUrl: string, periodDuration: number): DashRendition[] {
+function parsePeriodRenditions(mpd: Element, period: Element, manifestUrl: string, periodDuration: number, endsPresentation = false): DashRendition[] {
   const renditions: DashRendition[] = [];
   let videoAdaptations = 0;
   for (const adaptation of children(period, 'AdaptationSet')) {
@@ -641,7 +655,7 @@ function parsePeriodRenditions(mpd: Element, period: Element, manifestUrl: strin
       if (!type) {
         return fail(`unsupported mimeType ${mimeType ?? '(missing)'}; expected separate MP4 audio/video, WebVTT, TTML, MP4 wvtt/stpp or images`);
       }
-      return parseRendition(path, manifestUrl, periodDuration, type, index);
+      return parseRendition(path, manifestUrl, periodDuration, type, index, endsPresentation);
     });
     if (parsed.some((rendition) => rendition.type !== parsed[0]!.type)) {
       fail('mixed media types in an AdaptationSet are not supported');
@@ -821,4 +835,44 @@ export function writeDashMasterPlaylist(renditions: DashRendition[], playlistUrl
     builder.addStreamInfo(new M3U8StreamInfo(bandwidth, bandwidth, resolution, rendition.frameRate ?? null, playlistUrls[index]!, codecs));
   });
   return M3U8PlaylistWriter.write(builder.build());
+}
+
+/** Total `#EXTINF` duration of a media playlist, ie. where its media ends. */
+export function dashPlaylistDuration(playlist: string): number {
+  let total = 0;
+  for (const match of playlist.matchAll(/^#EXTINF:([\d.]+)/gm)) total += Number(match[1]);
+  return total;
+}
+
+export interface DashTailShortfall {
+  /** Duration the player should use: the declared one, or where the media really ends if every track ends early. */
+  duration: number;
+  message: string;
+}
+
+/**
+ * Compares where each track really ends with the duration the MPD declares, for tracks allowed to end
+ * short (see {@link DashRendition.allowsTailShortfall}). Audio shorter by less than about one codec
+ * frame is normal and not reported.
+ */
+export function resolveDashTailShortfall(declaredDuration: number, tracks: {type: 'video' | 'audio'; end: number}[]): DashTailShortfall | undefined {
+  const short = tracks.filter((track) => declaredDuration - track.end > (track.type === 'audio' ? 0.05 : 0.001));
+  if (!short.length || !tracks.length) {
+    return undefined;
+  }
+  const mediaEnd = Math.max(...tracks.map((track) => track.end));
+  const seconds = (value: number) => `${value.toFixed(3)} s`;
+  if (declaredDuration - mediaEnd > 0.001) {
+    return {
+      duration: mediaEnd,
+      message: `DASH: the media ends at ${seconds(mediaEnd)}, ${seconds(declaredDuration - mediaEnd)} before the ${seconds(declaredDuration)} the MPD declares; playback ends at ${seconds(mediaEnd)}.`,
+    };
+  }
+  const described = short.map(
+    (track) => `the ${track.type} track ends ${seconds(declaredDuration - track.end)} early (${track.type === 'video' ? 'its last frame is held' : 'audio is silent'} until the end)`
+  );
+  return {
+    duration: declaredDuration,
+    message: `DASH: ${described.join(' and ')}; the MPD declares ${seconds(declaredDuration)}.`,
+  };
 }

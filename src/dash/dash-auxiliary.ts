@@ -12,7 +12,8 @@ import {DefaultTextCue, TextTrackFile, ThumbnailTrack, TimedItemTemporalType, ty
 import {UrlSource} from '../source';
 import {httpGetBytes} from '../http';
 import {OmpError} from '../types';
-import type {DashByteRange, DashManifest, DashPeriod, DashRendition, DashSegment} from './dash-manifest';
+import type {DashByteRange, DashPeriod, DashRendition, DashSegment} from './dash-manifest';
+import type {DashAuxiliaryManifest} from './dash-main-media-session';
 import {createDashIndexBudget, mapLimit, resolveDashRendition} from './dash-segment-index';
 
 /** Parallel auxiliary tracks, and parallel segment downloads within one. */
@@ -101,7 +102,7 @@ function parseVtt(text: string, group: Group): {cues: Cue[]; offset: number} {
 }
 
 /** Downloads finite static auxiliary tracks; the caller owns every generated URL. */
-export function loadDashAuxiliaryTracks(manifest: DashManifest, createResource: (data: BlobPart[], mime: string) => string): Observable<(TextTrackFile | ThumbnailTrack)[]> {
+export function loadDashAuxiliaryTracks(manifest: DashAuxiliaryManifest, createResource: (data: BlobPart[], mime: string) => string): Observable<(TextTrackFile | ThumbnailTrack)[]> {
   return new Observable((observer) => {
     const controller = new AbortController();
     const signal = controller.signal;
