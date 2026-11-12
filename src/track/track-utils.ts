@@ -173,6 +173,23 @@ export class TrackUtils implements TrackUtilsApi {
           break;
         case TrackType.TEXT_TRACK:
           switch ((track as TextTrack).textTrackType) {
+            case TextTrackType.TEXT_TRACK_FILE:
+              {
+                const state = (track as TextTrackFile).state;
+                createNewTrack$ = of(
+                  new TextTrackFile({
+                    source: track.source,
+                    sourceFileFormatType: state.sourceFileFormatType,
+                    label: state.label,
+                    kind: state.kind,
+                    srclang: state.srclang,
+                    default: state.default,
+                    customAttrs: state.customAttrs,
+                    imscDocuments: state.imscDocuments,
+                  })
+                );
+              }
+              break;
             case TextTrackType.HLS_TEXT_TRACK:
               createNewTrack$ = this.createTextTrackFile(track as HlsTextTrack, {maxConcurrentRequests: 50, ...options});
               break;

@@ -39,6 +39,8 @@ import {AudioMainMedia} from '../audio/audio-file-main-media';
 import {TamsMainMedia} from '../tams/tams-main-media';
 import {TamsMainMediaSessionController} from '../tams/tams-main-media-session-controller';
 import {TamsMainMediaSessionRemote} from '../remoting/impl/tams-main-media-session-remote';
+import {DashMainMediaSessionRemote} from '../remoting/impl/dash-main-media-session-remote';
+import {DashMainMediaSessionController} from '../dash/dash-main-media-session-controller';
 import type {MainMediaSessionController} from './main-media-session-controller';
 import type {MainMediaSessionRemote} from '../remoting/main-media-session-remote';
 import {MarkerTrack} from './marker-track';
@@ -70,7 +72,7 @@ export class MediaFactory {
   };
 
   private static readonly TRACK_TYPE_FORMATS: Partial<Record<TrackType, readonly FileFormatType[]>> = {
-    [TrackType.AUDIO]: [FileFormatType.MP4, ...FileFormat.AUDIO.map((p) => p.type)],
+    [TrackType.AUDIO]: [FileFormatType.MP4, FileFormatType.MOV, ...FileFormat.AUDIO.map((p) => p.type)],
     [TrackType.TEXT_TRACK]: [...FileFormat.TEXT.map((p) => p.type)],
     [TrackType.MARKER_TRACK]: [FileFormatType.VTT],
     [TrackType.THUMBNAIL_TRACK]: [FileFormatType.VTT],
@@ -118,6 +120,8 @@ export class MediaFactory {
         return new TamsMainMediaSessionController(mainMedia as TamsMainMedia, trackRepository);
       case MainMediaType.HLS:
         return new HlsMainMediaSessionController(mainMedia, trackRepository);
+      case MainMediaType.DASH:
+        return new DashMainMediaSessionController(mainMedia, trackRepository);
       default:
         return undefined;
     }
@@ -127,6 +131,8 @@ export class MediaFactory {
     switch (mainMediaType) {
       case MainMediaType.TAMS:
         return new TamsMainMediaSessionRemote();
+      case MainMediaType.DASH:
+        return new DashMainMediaSessionRemote();
       default:
         return undefined;
     }

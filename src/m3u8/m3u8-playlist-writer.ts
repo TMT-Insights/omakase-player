@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import {M3U8Media, M3U8Playlist, M3U8Segment, M3U8StreamInfo} from './model/m3u8-model';
+import {type M3U8ByteRange, M3U8Media, M3U8Playlist, M3U8Segment, M3U8StreamInfo} from './m3u8-playlist.model';
 
 /**
  * Builder class to construct an M3U8Playlist instance.
@@ -181,17 +181,20 @@ export class M3U8PlaylistWriter {
 
     playlist.streams.forEach((stream) => {
       output += `#EXT-X-STREAM-INF:BANDWIDTH=${stream.bandwidth},AVERAGE-BANDWIDTH=${stream.averageBandwidth}`;
+      if (stream.codecs) {
+        output += `,CODECS=${quote(stream.codecs)}`;
+      }
       if (stream.resolution) {
         output += `,RESOLUTION=${stream.resolution.width}x${stream.resolution.height}`;
       }
       if (stream.frameRate) {
-        output += `,FRAME-RATE=${stream.frameRate}`;
+        output += `,FRAME-RATE=${decimal(stream.frameRate, 3)}`;
       }
       if (audioGroupId) {
-        output += `,AUDIO="${audioGroupId}"`;
+        output += `,AUDIO=${quote(audioGroupId)}`;
       }
       if (subtitlesGroupId) {
-        output += `,SUBTITLES="${subtitlesGroupId}"`;
+        output += `,SUBTITLES=${quote(subtitlesGroupId)}`;
       }
       if (stream.uri) {
         output += `\n${stream.uri}`;
@@ -200,27 +203,40 @@ export class M3U8PlaylistWriter {
     });
 
     playlist.media.forEach((media) => {
-      output += `#EXT-X-MEDIA:TYPE=${media.type},GROUP-ID="${media.groupId}",NAME="${media.name}",DEFAULT=${media.isDefault ? 'YES' : 'NO'},AUTOSELECT=${media.autoSelect ? 'YES' : 'NO'}`;
+      output += `#EXT-X-MEDIA:TYPE=${media.type},GROUP-ID=${quote(media.groupId)},NAME=${quote(media.name)},DEFAULT=${media.isDefault ? 'YES' : 'NO'},AUTOSELECT=${media.autoSelect ? 'YES' : 'NO'}`;
       if (media.language) {
-        output += `,LANGUAGE="${media.language}"`;
+        output += `,LANGUAGE=${quote(media.language)}`;
       }
       if (media.channels) {
-        output += `,CHANNELS="${media.channels}"`;
+        output += `,CHANNELS=${quote(media.channels)}`;
       }
-      output += `,URI="${media.uri}"\n`;
+      output += `,URI=${quote(media.uri)}\n`;
     });
 
-    let mapUri: string | undefined;
+    let mapKey: string | undefined;
 
     playlist.segments.forEach((segment) => {
-      if (segment.map && segment.map.uri !== mapUri) {
-        mapUri = segment.map.uri;
-        output += `#EXT-X-MAP:URI="${mapUri}"\n`;
+      if (segment.discontinuity) {
+        output += '#EXT-X-DISCONTINUITY\n';
+      }
+      if (segment.map) {
+        const key = `${segment.map.uri}|${byteRange(segment.map.byteRange) ?? ''}`;
+        // a discontinuity resets the decoder, so the map is restated even when it is unchanged
+        if (key !== mapKey || segment.discontinuity) {
+          mapKey = key;
+          const range = byteRange(segment.map.byteRange);
+          output += `#EXT-X-MAP:URI=${quote(segment.map.uri)}${range ? `,BYTERANGE=${quote(range)}` : ''}\n`;
+        }
       }
       if (segment.gap) {
         output += '#EXT-X-GAP\n';
       }
-      output += `#EXTINF:${segment.duration},\n${segment.uri}\n`;
+      output += `#EXTINF:${decimal(segment.duration, 9)},\n`;
+      const range = byteRange(segment.byteRange);
+      if (range) {
+        output += `#EXT-X-BYTERANGE:${range}\n`;
+      }
+      output += `${segment.uri}\n`;
     });
 
     if (playlist.endList) {
@@ -229,4 +245,24 @@ export class M3U8PlaylistWriter {
 
     return output;
   }
+}
+
+/** Quoted-string attribute value; HLS has no escape sequence, so values that cannot be quoted are rejected. */
+function quote(value: string): string {
+  if (/["\r\n]/.test(value)) {
+    throw new Error(`Invalid HLS quoted-string attribute value: ${JSON.stringify(value)}`);
+  }
+  return `"${value}"`;
+}
+
+/** decimal-floating-point without exponent notation or trailing zeros. */
+function decimal(value: number, precision: number): string {
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid HLS decimal value: ${value}`);
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(precision).replace(/\.?0+$/, '');
+}
+
+function byteRange(range: M3U8ByteRange | undefined): string | undefined {
+  return range ? `${range.length}@${range.offset}` : undefined;
 }

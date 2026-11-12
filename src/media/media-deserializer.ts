@@ -46,7 +46,7 @@ export class MediaDeserializer implements Destroyable {
       case MainMediaType.HLS:
         return this.createHlsMainMedia(state);
       case MainMediaType.DASH:
-        return new DashMainMedia({...this.createBaseMainMediaArgs(state), sourceFileFormatType: state.sourceFileFormatType});
+        return new DashMainMedia(this.createBaseMainMediaArgs(state));
       case MainMediaType.MP4:
         return this.createMp4MainMedia(state);
       case MainMediaType.AUDIO_FILE:
@@ -96,6 +96,7 @@ export class MediaDeserializer implements Destroyable {
     return {
       ...this.createBaseMediaEntityArgs(state),
       source: SourceFactory.create(state.source),
+      sourceFileFormatType: state.sourceFileFormatType,
       loadOptions: state.loadOptions,
       tracks: state.tracks.map((p) => this.createTrack(p)),
       duration: state.duration,
@@ -259,6 +260,7 @@ export class MediaDeserializer implements Destroyable {
       kind: state.kind,
       srclang: state.srclang,
       default: state.default,
+      imscDocuments: state.imscDocuments,
     };
   }
 

@@ -17,10 +17,18 @@
 import {resolve} from 'path';
 import {defineConfig} from 'vite';
 import dtsPlugin from 'vite-plugin-dts';
-import {nodePolyfills} from 'vite-plugin-node-polyfills';
 import {styleUpdatePlugin} from './vite.chroming-style.config.mjs';
 
 export default defineConfig({
+  resolve: {
+    alias: [
+      {find: /^(node:)?events$/, replacement: 'events/'},
+      {find: /^node:stream$/, replacement: 'stream-browserify'},
+      {find: /^stream$/, replacement: 'stream-browserify'},
+      {find: /^node:util$/, replacement: 'util/'},
+      {find: /^util$/, replacement: 'util/'},
+    ],
+  },
   plugins: [
     dtsPlugin({
       rollupTypes: true,
@@ -28,10 +36,6 @@ export default defineConfig({
       entryRoot: 'src',
     }),
     styleUpdatePlugin(),
-    // imsc
-    nodePolyfills({
-      include: ['stream', 'util'],
-    }),
   ],
   build: {
     minify: true,

@@ -36,6 +36,7 @@ import {ChromingMarkerBarHandlerProxy} from './impl/chroming-marker-bar-handler-
 import {AlertsManagerProxy} from './impl/alerts-manager-proxy';
 import {TrackUtilsProxy} from './impl/track-utils-proxy';
 import {TamsMainMediaSessionProxy} from './impl/tams-main-media-session-proxy';
+import {DashMainMediaSessionProxy} from './impl/dash-main-media-session-proxy';
 import {ThumbnailTrackProxy} from './impl/thumbnail-track-proxy';
 import {UiProxy} from './impl/ui-proxy';
 import {LivePlaybackTrackerProxy} from './impl/live-playback-tracker-proxy';
@@ -49,6 +50,7 @@ export const getMessageChannelProxyMap = () => ({
   OmakaseTrackApi: OmakaseTrackApiProxy,
   TrackUtils: TrackUtilsProxy,
   TamsMainMediaSession: TamsMainMediaSessionProxy,
+  DashMainMediaSession: DashMainMediaSessionProxy,
 
   MainMedia: MainMediaProxy,
   Track: TrackProxy,

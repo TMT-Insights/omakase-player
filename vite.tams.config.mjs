@@ -16,7 +16,6 @@
 
 import {resolve} from 'path';
 import {defineConfig} from 'vite';
-import {nodePolyfills} from 'vite-plugin-node-polyfills';
 
 // Serves playground/tams at the server root so the app lives at http://localhost:5173/.
 // This makes the OIDC redirect_uri exactly `http://localhost:5173` (the origin),
@@ -25,13 +24,14 @@ export default defineConfig({
   root: resolve(__dirname, 'playground/tams'),
   // Load the root .env (VITE_APP_OIDC_* / VITE_APP_TAMS_*) even though root moved.
   envDir: __dirname,
-  plugins: [
-    // the playback page imports the full OmakasePlayer from ../../src, which pulls in
-    // imsc (node built-ins)
-    nodePolyfills({
-      include: ['stream', 'util'],
-    }),
-  ],
+  resolve: {
+    alias: [
+      {find: /^node:stream$/, replacement: 'stream-browserify'},
+      {find: /^stream$/, replacement: 'stream-browserify'},
+      {find: /^node:util$/, replacement: 'util/'},
+      {find: /^util$/, replacement: 'util/'},
+    ],
+  },
   server: {
     port: 5173,
     strictPort: true,

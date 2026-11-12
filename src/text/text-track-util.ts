@@ -347,7 +347,6 @@ export class TextTrackUtil {
 
   static isUnplayableTextTrackFileFormatType(fileFormatType?: FileFormatType): boolean {
     switch (fileFormatType) {
-      case FileFormatType.SCC:
       case FileFormatType.STL:
         return true;
       default:

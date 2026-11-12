@@ -202,6 +202,8 @@ export type LoadMainMediaArgsType = {
   mainMediaEssentialArgsHook: MainMediaEssentialArgsHookType;
   tracksCreatedHook: (tracks: Track[]) => Observable<void>;
   mainMediaSessionController?: MainMediaSessionController | undefined;
+  /** Reports a problem the media can still be played with, eg. as a player alert. */
+  warningHook?: ((message: string) => void) | undefined;
   /** Set when resuming live media in a new window, so its timeline matches the one being resumed. */
   liveTimelineAnchor?: LiveTimelineAnchor | undefined;
   /**

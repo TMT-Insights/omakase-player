@@ -27,12 +27,14 @@ import {AuthConfig} from '../common';
 import {ObserverBreaker} from '../common/observer-breaker';
 import {SourceUtil} from '../source';
 import {PlayerTextRenderingRegion, TEXT_RENDERING_DOM_CLASSES, type PlayerTextTrackLoadOptions} from '../player/player-text-track';
+import {httpGetText} from '../http';
+import {parseSccCaptions} from './scc-caption-parser';
 
 export class MediaCaptionsTextTrackController extends BaseTextTrackController {
   protected _playerController: PlayerController;
   protected _captionsRenderer: CaptionsRenderer;
 
-  protected _parsedCaptionsResult: ParsedCaptionsResult | undefined;
+  protected _parsedCaptionsResult: Pick<ParsedCaptionsResult, 'regions' | 'cues'> | undefined;
 
   protected _captionsElement: HTMLElement;
   protected _switchBreaker = new ObserverBreaker();
@@ -101,6 +103,21 @@ export class MediaCaptionsTextTrackController extends BaseTextTrackController {
       }
 
       let format = this._format;
+
+      if (format === FileFormatType.SCC) {
+        httpGetText(url!, AuthConfig.createRequestInit(url!, AuthConfig.authentication))
+          .then((text) => {
+            this._parsedCaptionsResult = {
+              regions: [],
+              cues: parseSccCaptions(text),
+            };
+            nextCompleteObserver(observer);
+          })
+          .catch((error) => {
+            errorCompleteObserver(observer, error);
+          });
+        return;
+      }
 
       let type: CaptionsFileFormat | undefined;
       if (format) {

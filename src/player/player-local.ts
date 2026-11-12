@@ -258,6 +258,7 @@ export class PlayerLocal implements PlayerLocalApi, Destroyable {
                   mainMediaEssentialArgsHook: mainMediaEssentialArgsHook,
                   tracksCreatedHook: tracksCreatedHook,
                   mainMediaSessionController: mainMediaSessionController,
+                  warningHook: (message) => this._alertsManager.warn(message),
                 });
               }),
               takeUntil(this._loadMainMediaBreaker.observer)
@@ -309,7 +310,7 @@ export class PlayerLocal implements PlayerLocalApi, Destroyable {
                 switchMap((track) =>
                   this.loadSidecarTrack(track.id, {
                     trackType: TrackType.TEXT_TRACK,
-                    handlerType: preloadTextTrackHandler,
+                    handlerType: PlayerInternalUtil.resolveMainTextTrackHandler(textTrack, preloadTextTrackHandler),
                   }).pipe(
                     tap(() => {
                       if (defaultTextTrack?.id === textTrack.id) {

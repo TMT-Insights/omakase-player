@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import {describe, expect, it} from 'vitest';
-import {parseDashManifest, writeDashMasterPlaylist, writeDashMediaPlaylist} from '../../src/dash/dash-manifest';
+import {dashPlaylistDuration, parseDashManifest, resolveDashTailShortfall, writeDashMasterPlaylist, writeDashMediaPlaylist} from '../../src/dash/dash-manifest';
 
 const sourceUrl = 'https://example.com/media/manifest.mpd';
 const representation = (id = 'v1', bandwidth = 1000000) => `<Representation id="${id}" bandwidth="${bandwidth}" width="640" height="360"/>`;
@@ -8,6 +8,9 @@ const template = '<SegmentTemplate timescale="1000" duration="2000" initializati
 const video = (segmentTemplate = template, representations = representation()) =>
   `<AdaptationSet mimeType="video/mp4" codecs="avc1.4d401e" frameRate="30000/1001">${segmentTemplate}${representations}</AdaptationSet>`;
 const mpd = (adaptations = video(), attributes = '') => `<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT5S" ${attributes}><Period>${adaptations}</Period></MPD>`;
+/** The adaptations in a first Period that ends at an inner boundary, followed by a regular one. */
+const innerPeriod = (adaptations: string) => `<MPD mediaPresentationDuration="PT10S"><Period duration="PT5S">${adaptations}</Period><Period duration="PT5S">${video()}</Period></MPD>`;
+const shortTimeline = '<SegmentTemplate initialization="i.mp4" media="$Time$.m4s"><SegmentTimeline><S d="1"/></SegmentTimeline></SegmentTemplate>';
 
 describe('DASH to HLS bridge', () => {
   it('expands duration templates, startNumber, padding and a shortened final segment', () => {
@@ -27,11 +30,11 @@ describe('DASH to HLS bridge', () => {
       ],
     });
     expect(writeDashMediaPlaylist(manifest.renditions[0]!)).toBe(
-      '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXT-X-MEDIA-SEQUENCE:0\n' +
+      '#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n' +
         '#EXT-X-MAP:URI="https://example.com/media/v1/init.mp4"\n' +
-        '#EXTINF:2.000000000,\nhttps://example.com/media/v1/seg-007.m4s\n' +
-        '#EXTINF:2.000000000,\nhttps://example.com/media/v1/seg-008.m4s\n' +
-        '#EXTINF:1.000000000,\nhttps://example.com/media/v1/seg-009.m4s\n#EXT-X-ENDLIST\n'
+        '#EXTINF:2,\nhttps://example.com/media/v1/seg-007.m4s\n' +
+        '#EXTINF:2,\nhttps://example.com/media/v1/seg-008.m4s\n' +
+        '#EXTINF:1,\nhttps://example.com/media/v1/seg-009.m4s\n#EXT-X-ENDLIST\n'
     );
   });
 
@@ -73,9 +76,9 @@ describe('DASH to HLS bridge', () => {
     const manifest = parseDashManifest(mpd(video(template, representation() + representation('v2', 2000000)) + audio('en') + audio('fr')), sourceUrl);
     expect(manifest.renditions.map((rendition) => rendition.id)).toEqual(['v1', 'v2', 'en', 'fr']);
     const master = writeDashMasterPlaylist(manifest.renditions, ['video1.m3u8', 'video2.m3u8', 'en.m3u8', 'fr.m3u8']);
-    expect(master).toContain('TYPE=AUDIO,GROUP-ID="audio",NAME="en (3)",DEFAULT=YES,AUTOSELECT=YES,URI="en.m3u8",LANGUAGE="en",CHANNELS="2"');
+    expect(master).toContain('TYPE=AUDIO,GROUP-ID="audio",NAME="en (3)",DEFAULT=YES,AUTOSELECT=YES,LANGUAGE="en",CHANNELS="2",URI="en.m3u8"');
     expect(master).toContain('TYPE=AUDIO,GROUP-ID="audio",NAME="fr (4)",DEFAULT=NO');
-    expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=1128000,CODECS="avc1.4d401e,mp4a.40.2",RESOLUTION=640x360,FRAME-RATE=29.970030,AUDIO="audio"\nvideo1.m3u8');
+    expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=1128000,AVERAGE-BANDWIDTH=1128000,CODECS="avc1.4d401e,mp4a.40.2",RESOLUTION=640x360,FRAME-RATE=29.97,AUDIO="audio"\nvideo1.m3u8');
     expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=2128000');
   });
 
@@ -83,17 +86,55 @@ describe('DASH to HLS bridge', () => {
     const manifest = parseDashManifest(mpd(`<AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2">${template}<Representation id="a" bandwidth="128000"/></AdaptationSet>`), sourceUrl);
     const master = writeDashMasterPlaylist(manifest.renditions, ['audio.m3u8']);
     expect(master).toContain('#EXT-X-MEDIA:TYPE=AUDIO');
-    expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=128000,CODECS="mp4a.40.2",AUDIO="audio"\naudio.m3u8');
+    expect(master).toContain('#EXT-X-STREAM-INF:BANDWIDTH=128000,AVERAGE-BANDWIDTH=128000,CODECS="mp4a.40.2",AUDIO="audio"\naudio.m3u8');
+  });
+
+  it('inherits audio sampling rates and allows representation overrides', () => {
+    const audio = (attributes = '') => `<AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2" audioSamplingRate="48000">
+      ${template}<Representation id="a" bandwidth="128000" ${attributes}/></AdaptationSet>`;
+    expect(parseDashManifest(mpd(audio()), sourceUrl).renditions[0]?.audioSamplingRate).toBe(48000);
+    expect(parseDashManifest(mpd(audio('audioSamplingRate="24000"')), sourceUrl).renditions[0]?.audioSamplingRate).toBe(24000);
+  });
+
+  it.each(['0', '-24000', '24000.5', 'invalid'])('rejects invalid audio sampling rates: %s', (rate) => {
+    const audio = `<AdaptationSet mimeType="audio/mp4" codecs="mp4a.40.2" audioSamplingRate="${rate}">
+      ${template}<Representation id="a" bandwidth="128000"/></AdaptationSet>`;
+    expect(() => parseDashManifest(mpd(audio), sourceUrl)).toThrow(/invalid audioSamplingRate/);
+  });
+
+  it('inherits SegmentBase attributes and initialization ranges across MPD levels', () => {
+    const xml = `<MPD mediaPresentationDuration="PT5S"><BaseURL>../assets/</BaseURL><Period>
+      <SegmentBase timescale="1000" presentationTimeOffset="2000"><Initialization sourceURL="init.mp4" range="0-99"/></SegmentBase>
+      <AdaptationSet mimeType="video/mp4" codecs="avc1.4d401e"><SegmentBase indexRange="100-167"/>
+      <Representation id="v" bandwidth="100"><BaseURL>video.mp4</BaseURL></Representation></AdaptationSet></Period></MPD>`;
+    const rendition = parseDashManifest(xml, sourceUrl).renditions[0]!;
+    expect(rendition).toMatchObject({
+      initializationUrl: 'https://example.com/assets/init.mp4',
+      initializationByteRange: {offset: 0, length: 100},
+      presentationTimeOffset: 2,
+      segmentBase: {indexRange: {offset: 100, length: 68}, mediaUrl: 'https://example.com/assets/video.mp4'},
+      segments: [],
+    });
+    expect(() => writeDashMediaPlaylist(rendition)).toThrow(/no resolved playable segments/);
+  });
+
+  it.each(['100', '100-99', '-1-100', '0-9007199254740992'])('rejects invalid SegmentBase ranges: %s', (range) => {
+    expect(() => parseDashManifest(mpd(video(`<SegmentBase indexRange="${range}"><Initialization range="0-99"/></SegmentBase>`)), sourceUrl)).toThrow(/byte range|invalid SegmentBase/);
+  });
+
+  it.each([
+    ['unbounded initialization', '<SegmentBase indexRange="100-167"><Initialization/></SegmentBase>', /range or sourceURL/],
+    ['invalid initialization range', '<SegmentBase indexRange="100-167"><Initialization range="100-99"/></SegmentBase>', /Initialization/],
+    ['mixed addressing', template + '<SegmentBase indexRange="100-167"><Initialization range="0-99"/></SegmentBase>', /mixed/],
+  ])('explicitly rejects SegmentBase with %s', (_name, addressing, error) => {
+    expect(() => parseDashManifest(mpd(video(addressing)), sourceUrl)).toThrow(error);
   });
 
   it.each([
     ['malformed XML', '<MPD>', /invalid MPD/],
     ['dynamic MPD', mpd(video(), 'type="dynamic"'), /live\/dynamic/],
     ['DRM', mpd(video().replace(template, '<ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011"/>' + template)), /ContentProtection/],
-    ['multiple periods', mpd().replace('</MPD>', '<Period/></MPD>'), /multiple Period/],
-    ['nonzero period start', mpd().replace('<Period>', '<Period start="PT1S">'), /starting at zero/],
     ['missing duration', mpd().replace('mediaPresentationDuration="PT5S"', ''), /duration is required/],
-    ['SegmentBase', mpd(video('<SegmentBase/>')), /SegmentBase/],
     ['SegmentList', mpd(video('<SegmentList/>')), /SegmentList/],
     ['subtitles', mpd(video().replace('video/mp4', 'application/mp4')), /unsupported mimeType/],
     ['WebM', mpd(video().replace('video/mp4', 'video/webm')), /unsupported mimeType/],
@@ -112,9 +153,50 @@ describe('DASH to HLS bridge', () => {
     ['non-HTTP media', mpd(video().replace(template, '<BaseURL>data:video/mp4;base64,abc</BaseURL>' + template)), /HTTP/],
     ['different video adaptations', mpd(video() + video()), /multiple video/],
     ['leading trim', mpd(video(template.replace('duration="2000"', 'duration="2000" presentationTimeOffset="100"'))), /first segment/],
-    ['incomplete timeline', mpd(video('<SegmentTemplate initialization="i.mp4" media="$Time$.m4s"><SegmentTimeline><S d="1"/></SegmentTimeline></SegmentTemplate>')), /does not cover/],
+    ['an incomplete timeline at an inner Period boundary', innerPeriod(video(shortTimeline)), /does not cover/],
     ['timeline gap', mpd(video('<SegmentTemplate initialization="i.mp4" media="$Time$.m4s"><SegmentTimeline><S d="1"/><S t="2" d="3"/></SegmentTimeline></SegmentTemplate>')), /gaps and overlaps/],
   ])('explicitly rejects %s', (_name, xml, error) => {
     expect(() => parseDashManifest(xml, sourceUrl)).toThrow(error);
+  });
+
+  it('accepts audio/video ending before the presentation end, and plays them to their real end', () => {
+    const rendition = parseDashManifest(mpd(video(shortTimeline)), sourceUrl).renditions[0]!;
+    expect(rendition.allowsTailShortfall).toBe(true);
+    expect(rendition.segments.map((segment) => segment.duration)).toEqual([1]);
+    expect(writeDashMediaPlaylist(rendition)).toContain('#EXTINF:1,');
+  });
+});
+
+describe('DASH tail shortfall', () => {
+  it('reads where a playlist ends', () => {
+    expect(dashPlaylistDuration('#EXTM3U\n#EXTINF:2,\na\n#EXTINF:1.5,\nb\n#EXT-X-ENDLIST\n')).toBe(3.5);
+  });
+
+  it('shortens the duration only when every track ends early', () => {
+    expect(
+      resolveDashTailShortfall(10, [
+        {type: 'video', end: 9.5},
+        {type: 'audio', end: 9.8},
+      ])
+    ).toEqual({duration: 9.8, message: expect.stringMatching(/ends at 9\.800 s, 0\.200 s before the 10\.000 s/)});
+    expect(
+      resolveDashTailShortfall(10, [
+        {type: 'video', end: 9.947},
+        {type: 'audio', end: 10},
+      ])
+    ).toEqual({
+      duration: 10,
+      message: expect.stringMatching(/video track ends 0\.053 s early \(its last frame is held/),
+    });
+  });
+
+  it('ignores exact coverage and audio short by less than a codec frame', () => {
+    expect(
+      resolveDashTailShortfall(10, [
+        {type: 'video', end: 10},
+        {type: 'audio', end: 9.98},
+      ])
+    ).toBeUndefined();
+    expect(resolveDashTailShortfall(10, [{type: 'video', end: 9.9995}])).toBeUndefined();
   });
 });
