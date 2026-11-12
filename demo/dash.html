@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Omakase Player - DASH sample</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+        background: #101318;
+        color: #eef1f5;
+      }
+      body {
+        max-width: 1080px;
+        margin: 40px auto;
+        padding: 0 20px;
+      }
+      h1 {
+        font-size: 1.8rem;
+      }
+      p {
+        line-height: 1.6;
+      }
+      form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 24px 0;
+        align-items: end;
+      }
+      label {
+        display: grid;
+        gap: 8px;
+        flex: 1;
+        min-width: 240px;
+      }
+      input,
+      button {
+        font: inherit;
+        padding: 12px;
+        border: 1px solid #536078;
+        border-radius: 6px;
+      }
+      button {
+        background: #265aca;
+        color: white;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: wait;
+      }
+      #omakase-player {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        background: black;
+      }
+      #status {
+        overflow-wrap: anywhere;
+      }
+      #status[data-error="true"] {
+        color: #ff9a9a;
+      }
+      .note {
+        color: #b7c1d1;
+      }
+    </style>
+    <script type="module" src="./js/dash.js"></script>
+  </head>
+  <body>
+    <h1>MPEG-DASH through the HLS player</h1>
+    <p>This sample loads a static MPD and bridges its fragmented MP4 segments to the existing Omakase HLS playback engine.</p>
+    <form id="stream-form">
+      <label for="stream-url">
+        DASH manifest URL
+        <input id="stream-url" type="url" required />
+      </label>
+      <button id="load-button" type="submit" disabled>Load stream</button>
+    </form>
+    <div id="omakase-player"></div>
+    <p id="status" role="status" aria-live="polite">Initializing player...</p>
+    <p class="note">
+      The default manifest uses two video renditions from Envivio's public DASH test stream, without audio so it also works in browsers without AAC support. Loading does not autoplay; press Play after
+      it is ready.
+    </p>
+    <p class="note">For audio/video playback in a browser with AAC support, load https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd.</p>
+    <p class="note">
+      Use one static MPD with compatible, contiguous Periods and fragmented MP4 using SegmentTemplate, SegmentList or SegmentBase/SIDX addressing. Pre-authored ad Periods are supported. HTTP
+      byte-range support is recommended; full-file HTTP 200 responses are streamed without buffering the whole file unless it is addressed as one segment, but may require downloading the prefix again
+      for each fragment. MPD WebVTT, TTML/IMSC and MP4 wvtt/stpp subtitles and individual/tiled image thumbnail tracks are supported. Live, DRM, in-video CEA captions and trick-mode representations
+      are not supported. Streams must allow CORS.
+    </p>
+  </body>
+</html>

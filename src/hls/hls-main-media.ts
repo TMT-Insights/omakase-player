@@ -31,26 +31,7 @@ export class HlsMainMedia extends BaseMainMedia<HlsMainMediaState> {
   }
 
   protected getState(): HlsMainMediaState {
-    return {
-      id: this._id,
-      mediaType: this._mediaType,
-      mainMediaType: this._mainMediaType,
-      loadOptions: this._loadOptions,
-      tracks: this.tracks.map((p) => p.state),
-      source: this.source.state,
-      loadStage: this.loadStage.state,
-
-      duration: this._duration,
-      initialDuration: this._initialDuration,
-      frameRateModel: this._frameRateModel,
-      ffomTimecodeModel: this._ffomTimecodeModel,
-      initSegmentTimeOffset: this._initSegmentTimeOffset,
-      hasDrm: this._hasDrm,
-      hasVideo: this._hasVideo,
-      hasAudio: this._hasAudio,
-
-      isLive: this._isLive,
-      liveState: this._liveState,
-    };
+    // the base state, so that nothing it gains (eg. sourceFileFormatType) is dropped from HLS sessions
+    return super._getState();
   }
 }

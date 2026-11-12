@@ -83,6 +83,15 @@ export interface TextTrackState extends TimedItemsTrackState<TextCueState> {
   srclang?: string | undefined;
   /** Whether this text track is selected by default. */
   default: boolean;
+  imscDocuments?: TimedImscDocument[] | undefined;
+}
+
+/** Styled TTML documents anchored to a normalized media timeline. */
+export interface TimedImscDocument {
+  url: string;
+  start: number;
+  end: number;
+  timeOffset: number;
 }
 
 export interface TextTrack<S extends TextTrackState = TextTrackState, E extends OmpEventGroup<any, any> = never> extends TimedItemsTrack<TextCue, S, TextCueUpdateableAttrs, E> {
@@ -114,6 +123,7 @@ export interface TextTrackArgs extends BaseTrackArgs {
   srclang?: string | undefined;
   /** Whether this track should be selected by default. */
   default?: boolean;
+  imscDocuments?: TimedImscDocument[] | undefined;
 }
 
 /**
@@ -140,6 +150,7 @@ export abstract class BaseTextTrack<T extends TextCue, TM extends T & BaseTextCu
   protected _kind: TextTrackKind | undefined;
   protected _srclang: string | undefined;
   protected _default: boolean = false;
+  protected _imscDocuments: TimedImscDocument[] | undefined;
 
   protected constructor(args: TextTrackArgs) {
     super(args);
@@ -147,6 +158,7 @@ export abstract class BaseTextTrack<T extends TextCue, TM extends T & BaseTextCu
     this._kind = args.kind;
     this._srclang = args.srclang;
     this._default = !!args.default;
+    this._imscDocuments = args.imscDocuments;
   }
 
   protected _getState(): TextTrackState {
@@ -156,6 +168,7 @@ export abstract class BaseTextTrack<T extends TextCue, TM extends T & BaseTextCu
       kind: this._kind,
       srclang: this._srclang,
       default: this._default,
+      ...(this._imscDocuments ? {imscDocuments: this._imscDocuments} : {}),
     };
   }
 

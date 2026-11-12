@@ -16,7 +16,7 @@
 
 import type {AudioFlow, Flow, FlowSegment, FlowSegmentGetUrlsInner, VideoFlow} from '../tams-model';
 import {TimeRangeUtil} from '../time-range-util';
-import {M3U8Segment, M3U8StreamInfo} from './model/m3u8-model';
+import {M3U8Segment, M3U8StreamInfo} from '../../m3u8/m3u8-playlist.model';
 import type {TamsMediaData} from './model/tams-media-data-model';
 import {exportSegmentsToManifest, type M3U8ManifestMetadata, type M3U8MediaInfo, type Manifest, NON_PLAYABLE_GAP_URI, type SegmentsWithMetadata} from './tams-adapter';
 import {type TamsPlayback, TamsPlaybackMode} from '../tams-playback';
@@ -24,8 +24,8 @@ import {TAMS_CONTAINER, TAMS_FORMAT, TAMS_MANIFEST, TAMS_HLS_TAG} from '../const
 
 /**
  * Converts fetched TAMS media data (a flow, its subflows and their segments) into
- * an HLS playlists, registered in the {@link TamsManifestRegistry}
- * and served by {@link TamsManifestLoader}. Returns the synthetic master URL and
+ * an HLS playlists, registered in the {@link SyntheticManifestRegistry}
+ * and served by {@link SyntheticManifestLoader}. Returns the synthetic master URL and
  * per-track playlist URLs.
  */
 export function buildTamsManifest(tamsMediaData: TamsMediaData, playback: TamsPlayback, mediaSequences?: Map<string, number> | undefined): Manifest {

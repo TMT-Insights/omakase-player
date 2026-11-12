@@ -528,6 +528,7 @@ export class PlayerDetached implements PlayerDetachedApi, Destroyable {
                       mainMediaEssentialArgsHook,
                       tracksCreatedHook,
                       mainMediaSessionController: this._mainMediaSessionRemote,
+                      warningHook: (message) => this._alertsManager?.warn(message).subscribe(),
                     })
                     .pipe(takeUntil(this._loadMainMediaBreaker.observer))
                     .subscribe({
@@ -588,7 +589,7 @@ export class PlayerDetached implements PlayerDetachedApi, Destroyable {
                 switchMap((track) =>
                   this.loadSidecarTrack(track.id, {
                     trackType: TrackType.TEXT_TRACK,
-                    handlerType: preloadTextTrackHandler,
+                    handlerType: PlayerInternalUtil.resolveMainTextTrackHandler(textTrack, preloadTextTrackHandler),
                   }).pipe(
                     tap(() => {
                       if (defaultTextTrack?.id === textTrack.id) {

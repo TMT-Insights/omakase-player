@@ -1576,7 +1576,7 @@ export abstract class ChromingDomController<T extends ChromingTheme> implements 
   }
 
   protected isMainAudioRouterSupported(): boolean {
-    return !(BrowserProvider.instance.isSafari && this._mainMediaType === MainMediaType.HLS);
+    return !(BrowserProvider.instance.isSafari && (this._mainMediaType === MainMediaType.HLS || this._mainMediaType === MainMediaType.DASH));
   }
 
   resetMainMediaVideoElement() {

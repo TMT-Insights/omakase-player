@@ -39,6 +39,8 @@ import {AudioMainMedia} from '../audio/audio-file-main-media';
 import {TamsMainMedia} from '../tams/tams-main-media';
 import {TamsMainMediaSessionController} from '../tams/tams-main-media-session-controller';
 import {TamsMainMediaSessionRemote} from '../remoting/impl/tams-main-media-session-remote';
+import {DashMainMediaSessionRemote} from '../remoting/impl/dash-main-media-session-remote';
+import {DashMainMediaSessionController} from '../dash/dash-main-media-session-controller';
 import type {MainMediaSessionController} from './main-media-session-controller';
 import type {MainMediaSessionRemote} from '../remoting/main-media-session-remote';
 import {MarkerTrack} from './marker-track';
@@ -50,6 +52,7 @@ import {FileFormat, FileFormatType} from '../common';
 import type {TrackLoadOptions} from '../track';
 import {FrameImageMainMedia, FrameImageTrack, TrickTrack} from '../frame-image';
 import {checkSidecarVideoTrackTypeEnabled} from './media-container-track';
+import {DashMainMedia} from '../dash/dash-main-media';
 
 export class MediaFactory {
   protected static get _tools(): OmakaseToolsApi {
@@ -58,6 +61,7 @@ export class MediaFactory {
 
   private static readonly MAIN_MEDIA_TYPE_FORMATS: Record<MainMediaType, readonly FileFormatType[]> = {
     [MainMediaType.HLS]: [FileFormatType.HLS],
+    [MainMediaType.DASH]: [FileFormatType.DASH],
     [MainMediaType.MP4]: [FileFormatType.MP4, FileFormatType.MOV],
     [MainMediaType.AUDIO_FILE]: [...FileFormat.AUDIO.map((p) => p.type)],
     // TAMS is bridged to HLS internally
@@ -68,7 +72,7 @@ export class MediaFactory {
   };
 
   private static readonly TRACK_TYPE_FORMATS: Partial<Record<TrackType, readonly FileFormatType[]>> = {
-    [TrackType.AUDIO]: [FileFormatType.MP4, ...FileFormat.AUDIO.map((p) => p.type)],
+    [TrackType.AUDIO]: [FileFormatType.MP4, FileFormatType.MOV, ...FileFormat.AUDIO.map((p) => p.type)],
     [TrackType.TEXT_TRACK]: [...FileFormat.TEXT.map((p) => p.type)],
     [TrackType.MARKER_TRACK]: [FileFormatType.VTT],
     [TrackType.THUMBNAIL_TRACK]: [FileFormatType.VTT],
@@ -89,6 +93,8 @@ export class MediaFactory {
         switch (mainMediaType) {
           case MainMediaType.HLS:
             return new HlsMainMedia({source: urlSource, sourceFileFormatType, loadOptions});
+          case MainMediaType.DASH:
+            return new DashMainMedia({source: urlSource, sourceFileFormatType, loadOptions});
           case MainMediaType.MP4:
             return new Mp4MainMedia({
               source: urlSource,
@@ -114,6 +120,8 @@ export class MediaFactory {
         return new TamsMainMediaSessionController(mainMedia as TamsMainMedia, trackRepository);
       case MainMediaType.HLS:
         return new HlsMainMediaSessionController(mainMedia, trackRepository);
+      case MainMediaType.DASH:
+        return new DashMainMediaSessionController(mainMedia, trackRepository);
       default:
         return undefined;
     }
@@ -123,6 +131,8 @@ export class MediaFactory {
     switch (mainMediaType) {
       case MainMediaType.TAMS:
         return new TamsMainMediaSessionRemote();
+      case MainMediaType.DASH:
+        return new DashMainMediaSessionRemote();
       default:
         return undefined;
     }
@@ -150,6 +160,10 @@ export class MediaFactory {
     // Validate fileFormat against mainMediaType if both are known
     if (fileFormat && mainMediaType && !this.MAIN_MEDIA_TYPE_FORMATS[mainMediaType].includes(fileFormat.type)) {
       throw new Error(`fileFormatType ${fileFormatType} is not compatible with mainMediaType ${mainMediaType}`);
+    }
+
+    if (mainMediaType === MainMediaType.DASH) {
+      return of({mainMediaType, fileFormat: FileFormat.DASH});
     }
 
     // fileFormat known — derive mainMediaType if needed, no probe required

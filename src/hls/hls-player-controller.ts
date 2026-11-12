@@ -19,6 +19,8 @@ import Decimal from 'decimal.js';
 import {type AudioState, LiveMode, type MainMediaLoadOptions, type MainMediaState, type MainMediaUpdateableAttrs, type TextTrackState} from '../media';
 import {combineLatest, filter, fromEvent, interval, map, Observable, of, Subject, type Subscription, switchMap, take, takeUntil, throwError, timeout} from 'rxjs';
 import {errorCompleteObserver, nextCompleteObserver} from '../util/rxjs-util';
+import {createRangeFragmentLoader} from './hls-range-fragment-loader';
+import {createAuthFetchSetup} from './hls-request-setup';
 import {HlsJsFactory} from './hls-js-factory';
 import {createHlsPlaylistAlignLoader, resolvePlaylistMediaSequence} from './hls-playlist-align-loader';
 import {type FrameRateModel, FrameRateResolver} from '../common/frame-rate';
@@ -72,13 +74,29 @@ export class HlsPlayerController extends BasePlayerController<HlsPlayerControlle
     super(playerDomController, {
       ..._hlsControllerConfigDefault,
       ...(config || {}),
-      hlsConfig: {
+      hlsConfig: HlsPlayerController.resolveHlsConfig({
         ..._hlsControllerConfigDefault.hlsConfig,
         ...(config?.hlsConfig || {}),
-      },
+      }),
     });
 
     this._createMediaElementSourceEnabled = !BrowserProvider.instance.isSafari; // if HLS and Safari then we handle MediaElementSourceEnabled related to audio in different way
+  }
+
+  /**
+   * Request handling every HLS source gets: ranged fragments are protected against servers that
+   * ignore `Range`, and fetch-based requests carry {@link AuthConfig} headers like XHR ones do.
+   * The configured `fLoader`/`loader` and `fetchSetup` are wrapped, not replaced.
+   *
+   * Ranged fragments are streamed with Fetch unless the application customises XHR requests
+   * (`xhrSetup`) but not Fetch ones, as its setup would then silently stop applying to them.
+   */
+  protected static resolveHlsConfig(hlsConfig: Partial<HlsConfig>): Partial<HlsConfig> {
+    return {
+      ...hlsConfig,
+      fLoader: createRangeFragmentLoader(hlsConfig.fLoader ?? hlsConfig.loader, {stream: !hlsConfig.xhrSetup || !!hlsConfig.fetchSetup}),
+      fetchSetup: createAuthFetchSetup(hlsConfig.fetchSetup),
+    };
   }
 
   wireEvents(mainMediaState: MainMediaState) {

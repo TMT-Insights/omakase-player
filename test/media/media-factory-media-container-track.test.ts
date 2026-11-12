@@ -30,7 +30,7 @@ vi.hoisted(() => {
 });
 import {firstValueFrom} from 'rxjs';
 import {MediaFactory} from '../../src/media/media-factory';
-import {DISABLED_SIDECAR_VIDEO_TRACK_TYPES, TrackType} from '../../src/media';
+import {AudioFile, DISABLED_SIDECAR_VIDEO_TRACK_TYPES, TrackType} from '../../src/media';
 import {UrlSource} from '../../src/source';
 import {FileFormatType} from '../../src/common';
 import {HlsTrack} from '../../src/hls/hls-track';
@@ -40,6 +40,27 @@ import {TrickTrack} from '../../src/frame-image/trick-track';
 import type {TrackLoadOptions} from '../../src/track';
 
 describe('MediaFactory container tracks', () => {
+  it('creates an audio sidecar from a MOV without changing its container format', async () => {
+    const track = await firstValueFrom(
+      MediaFactory.createSidecarTrack(new UrlSource('https://example.com/audio.mov'), {
+        trackType: TrackType.AUDIO,
+        fileFormatType: FileFormatType.MOV,
+        args: {id: 'mov-audio', label: 'MOV audio'},
+      })
+    );
+    expect(track).toBeInstanceOf(AudioFile);
+    expect(track.state).toMatchObject({id: 'mov-audio', trackType: TrackType.AUDIO, sourceFileFormatType: FileFormatType.MOV});
+  });
+
+  it('continues to reject an HLS playlist as an audio-file sidecar', () => {
+    expect(() =>
+      MediaFactory.createSidecarTrack(new UrlSource('https://example.com/audio.m3u8'), {
+        trackType: TrackType.AUDIO,
+        fileFormatType: FileFormatType.HLS,
+      })
+    ).toThrow(/not compatible/);
+  });
+
   it.skipIf(DISABLED_SIDECAR_VIDEO_TRACK_TYPES.includes(TrackType.HLS_TRACK))('creates HlsTrack for explicit HLS_TRACK', async () => {
     const track = await firstValueFrom(
       MediaFactory.createSidecarTrack(new UrlSource('https://example.com/sidecar.m3u8'), {

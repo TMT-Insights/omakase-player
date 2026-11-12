@@ -27,12 +27,15 @@ import {CompositePlayerController} from './composite-player-controller';
 import {CompositePlaybackDomController} from './composite-playback-dom-controller';
 import {ClockPlayerController} from '../virtual/clock-player-controller';
 import type {PlayerControllerConfig} from './player-controller';
+import {DashPlayerController} from '../dash/dash-player-controller';
 
 export class PlayerControllerFactory {
   static create<T extends MainMediaType>(mainMediaType: T, playerDomController: PlayerDomController, config?: Partial<PlayerControllerConfigMap[T]>): PlayerController {
     switch (mainMediaType) {
       case MainMediaType.HLS:
         return this.createComposite(new HlsPlayerController(playerDomController, config as Partial<HlsPlayerControllerConfig>), playerDomController, config);
+      case MainMediaType.DASH:
+        return this.createComposite(new DashPlayerController(playerDomController, config as Partial<HlsPlayerControllerConfig>), playerDomController, config);
       case MainMediaType.MP4:
         return this.createComposite(new Mp4PlayerController(playerDomController, config as Mp4PlayerControllerConfig), playerDomController, config);
       case MainMediaType.AUDIO_FILE:

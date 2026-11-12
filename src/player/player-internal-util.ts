@@ -18,7 +18,8 @@ import {catchError, concat, Observable, of, timeout} from 'rxjs';
 import {nextCompleteObserver} from '../util/rxjs-util';
 import type {PlayerConfig, PlayerInternalApi} from './player-api';
 import type {PlayerSession} from '../session';
-import type {MainMediaState, MediaLiveState} from '../media';
+import type {MainMediaState, MediaLiveState, TextTrackState} from '../media';
+import {FileFormatType} from '../common/file-format';
 import {PlayerTextHandlerType} from './player-text-track';
 import {TextTrackUtil} from '../text/text-track-util';
 import type {LiveTimelineAnchor} from './player-controller-api';
@@ -43,6 +44,15 @@ export class PlayerInternalUtil {
   /**
    * Text handlers to use for a main media's own tracks.
    */
+  /**
+   * Handler a main-media text track is preloaded with. Styled TTML cannot be rendered by
+   * {@link PlayerTextHandlerType.MEDIA_CAPTIONS}, so it is routed to {@link PlayerTextHandlerType.IMSC}.
+   */
+  static resolveMainTextTrackHandler(textTrack: TextTrackState, handlerType: PlayerTextHandlerType): PlayerTextHandlerType {
+    const isTtml = !!textTrack.imscDocuments?.length || textTrack.sourceFileFormatType === FileFormatType.TTML;
+    return isTtml && handlerType === PlayerTextHandlerType.MEDIA_CAPTIONS ? PlayerTextHandlerType.IMSC : handlerType;
+  }
+
   static resolveTextMainTracksHandler(configured: PlayerConfig['textMainTracksHandler'], mainMediaState: MainMediaState | undefined): PlayerConfig['textMainTracksHandler'] {
     return TextTrackUtil.rendersTextNatively(mainMediaState) ? [PlayerTextHandlerType.EMBEDDED] : configured;
   }

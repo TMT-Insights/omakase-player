@@ -45,6 +45,17 @@ If used with modern Typescript / Javascript frameworks (such as Angular, React o
 npm install @byomakase/omakase-player
 ```
 
+For a local tarball, run `npm run build && npm pack` in this repository, then
+install the resulting archive in the consuming project. The package's `types`
+entry points to `dist/index.d.ts`; keep that declaration entry and its referenced
+declarations in the archive alongside `dist/omakase-player.es.js`.
+
+The build bundles browser polyfills for `events`, `stream`, and `util`, including
+the `EventEmitter` used by the subtitle converter. These must be resolved while
+building the player; consumer aliases cannot repair an already-bundled empty
+Node module stub. Run `npm run test:bundle` after building to smoke-test the
+generated module in a DOM environment before packing it.
+
 Optionally, you can include default Omakase Player CSS stylesheet or import and use `omakase-player.scss` SCSS stylesheet.
 
 ```html
@@ -79,6 +90,72 @@ omakasePlayer.loadMainMedia('https://my-server.com/myvideo.m3u8').subscribe({
   },
 });
 ```
+
+### MPEG-DASH (VOD)
+
+Run the local sample from the repository root:
+
+```bash
+npm ci
+npm run dev:dash
+```
+
+Open http://localhost:5173/demo/dash.html. The sample imports the local source and automatically loads a video-only manifest referencing two renditions of the public Envivio DASH stream; press Play once ready. This also works in browsers without AAC support. Paste another MPD URL and click **Load stream**, or pass it as the URL-encoded `url` query parameter. For audio/video playback in an AAC-capable browser, use `https://dash.akamaized.net/envivio/EnvivioDash3/manifest.mpd`.
+
+Static MPEG-DASH MPDs are bridged to HLS playlists and played by the existing hls.js engine, without transcoding or adding dash.js. `.mpd` URLs are detected automatically; for URLs without an extension, specify the media type:
+
+```javascript
+import {MainMediaType} from '@omakase-player';
+
+omakasePlayer.loadMainMedia('https://my-server.com/manifest.mpd', {
+  mainMediaType: MainMediaType.DASH,
+}).subscribe({
+  next: (mainMedia) => console.log(mainMedia.duration),
+  error: (error) => console.error(error),
+});
+```
+
+Supported: one static MPD containing one or more contiguous Periods and separate fragmented MP4 video/audio. Period starts/durations are inferred from explicit timing, adjacent Periods, and `mediaPresentationDuration`. Nonzero first Period starts are normalized to playback time zero; duration and sidecar timelines use that normalized axis. Pre-authored content/ad/content Periods play through one HLS session, with discontinuities and new initialization maps at boundaries; seeking works across those boundaries. No additional MPD or ad-decision service is needed. Period tracks must retain compatible codec strings, declared video frame rates and audio channel/sample-rate layouts. Audio tracks are matched by language, Role and Label, with representation IDs disambiguating otherwise identical tracks. Video variants match by codec and representation ID, falling back to nearest bandwidth when an ad has a different rendition ladder. All video variants within each Period must have aligned segment boundaries.
+
+Segment addressing supports inherited `BaseURL`, `SegmentTemplate`, `SegmentList` and `SegmentBase`, with a lower-level addressing type overriding a different inherited type. Templates support duration or `SegmentTimeline` addressing (including repeats), `startNumber`/inclusive `endNumber`, `$RepresentationID$`, `$Bandwidth$`, `$Number$`, `$Time$`, initialization elements/ranges, and per-segment index templates/ranges. SegmentList supports explicit media URLs/ranges, initialization, duration/timeline timing, and per-segment index URLs/ranges. SegmentBase supports `indexRange`, external `RepresentationIndex` resources/ranges, and SIDX versions 0/1 including hierarchical references. Indexes are resolved to HLS media byte ranges when hls.js first requests a rendition's playlist: the initial video and audio renditions are resolved while the load starts (their errors fail the load), other ladder renditions only when the player switches to them. Missing initialization/index information can be discovered from top-level MP4 boxes, usually with a single 16 KiB request. Unindexed fragmented files can be used as one segment when their media portion is at most 64 MiB and the server exposes the file size; larger files need explicit segment addressing or SIDX. Progressive (non-fragmented) MP4 is not supported by this bridge.
+
+Servers may return `206 Partial Content` or ignore `Range` and return a full-file `200 OK`: the default index and byte-range fragment loaders stream past and discard the prefix, retain only the requested bytes, and cancel the remaining response. The whole media file is not buffered unless it is explicitly addressed as one media segment. Without server range support, each fragment or seek may still require downloading the prefix again, so HTTP range support is strongly recommended for large media. Servers must allow CORS access to the MPD, indexes, initialization segments, and media segments. Alternate audio AdaptationSets become selectable HLS audio tracks; the highest-bandwidth representation is used within each audio AdaptationSet. Playback requires browser codec support.
+
+MPD text AdaptationSets support standalone or segmented WebVTT (`text/vtt`), TTML/IMSC (`application/ttml+xml`), and fragmented MP4 `wvtt`/`stpp` (`application/mp4`). Text tracks retain language, labels, caption/subtitle roles and `main` defaults; forced-subtitle roles are exposed as `customAttrs.dashForced` rather than automatically enabled. A single unsegmented WebVTT or TTML file that needs no time shift becomes an ordinary text track referencing its URL, fetched by the text renderer when used. Other text (segmented, byte-ranged, shifted or fragmented MP4) is downloaded and normalized using Period starts and presentation offsets, including WebVTT timestamp maps. WebVTT markup, cue settings, STYLE and REGION blocks are preserved. TTML/stpp retains document styling/regions through the IMSC renderer by default; explicitly selecting a WebVTT/native handler uses a plain-text normalized export instead. Auxiliary tracks may have sparse timelines, appear/disappear between Periods, and be clipped at Period boundaries independently of A/V.
+
+Image AdaptationSets support JPEG, PNG, WebP and AVIF (subject to browser decoding), either as individual images or DASH-IF `http://dashif.org/guidelines/thumbnail_tile` sprite grids. Sheet dimensions must be declared and divisible by the tile grid. Tiles use row-major order and equal subdivisions of the untrimmed segment duration. Image tracks become ordinary thumbnail tracks with generated WebVTT/`xywh` sources that reference the images by URL (only byte-range sprites, which no URL can address, are downloaded): select their source with the existing `chroming.setThumbnailTrack` API (pass `fileFormatType: FileFormatType.VTT` for the generated Blob URL) or use them in timeline thumbnail lanes. They are not automatically selected as the chroming thumbnail source. Text and image resources are authenticated with `AuthConfig` and support media byte ranges. Downloaded text is loaded alongside A/V startup, and auxiliary tracks are added before the load completes; the highest-bandwidth representation is selected within each auxiliary AdaptationSet.
+
+Live/dynamic MPDs, multiple video AdaptationSets per Period, DRM, multiple `BaseURL` alternatives, XLink, Period gaps/overlaps, A/V SegmentTimeline gaps/overlaps, and A/V leading trims are rejected with an explicit load error. In-video CEA-608/708 captions are not extracted. A finite duration must be derivable for every Period. Audio/video tracks within each Period must share the same playback origin. A/V SegmentTemplate/List tracks must start at their `presentationTimeOffset`; SegmentBase/SIDX tracks may have a later first presentation timestamp due to composition offsets (such as B-frames), with playback timing derived by hls.js from the actual MP4 timestamps. A/V SIDX timestamps before `presentationTimeOffset` still require unsupported leading trims. General A/V leading-gap compensation is not implemented. Audio/video in the final Period may end before the presentation end the MPD declares, which encoders commonly do by a frame or two. Such tracks are played to their real end and the player raises a warning alert (also logged to the console) when the media loads. If every track ends early, the player's duration becomes where the media really ends, so playback, seeking to the end and the timeline stop there; if only some do, the duration is kept and a short video track holds its last frame (a short audio track is silent) until the end. At an intermediate Period boundary tracks must still reach the boundary: AAC-LC (`mp4a.40.2`) SIDX audio may end up to one 1024-sample frame short when `audioSamplingRate` is declared, and the final audio playlist duration accounts for that shortfall to keep the next Period aligned; audio samples are not padded or stretched. Alternate audio tracks must use the same codec.
+
+Resource limits: 100,000 template/list segments per representation; 16 MiB per index request and discovered initialization prefix; 64 MiB aggregate index bytes, 2,048 index/discovery requests and 100,000 indexed media references per load; eight nested SIDX levels; 1,024 top-level boxes per discovery scan. Downloaded auxiliary resources have limits of 32 MiB per request, 128 MiB aggregate downloads, 4,096 requests and 100,000 cues per MPD load; sprite grids are limited to 10,000 tiles. Invalid ranges, inconsistent nested-index timing and ambiguous/incompatible Period track transitions fail explicitly.
+
+DASH uses `playerControllerConfig[MainMediaType.DASH].hlsConfig` on `OmakasePlayer` (`controllerConfig` on `Player`) and `player.getPlaybackEngine(MainMediaType.DASH)` for HLS engine configuration/access. Authentication uses the existing `AuthConfig`; session state retains the original MPD URL. The MPD is fetched and bridged once, by the media's session in the window that loaded it, and kept for the life of the media: player reloads and re-attaching reuse it, and a detached window plays the same playlists, asking the owning window to build any it has not yet built instead of fetching the MPD and indexes again. Registered auxiliary tracks own their generated resources, retain them across controller destruction/detachment, and revoke them when the tracks are removed. A failed or cancelled load releases resources that have not been handed to the track repository.
+
+Byte-range fragments of every HLS source, including DASH-derived and `EXT-X-BYTERANGE` playlists, are protected against servers that ignore `Range`. With the default loaders they are streamed with the Fetch loader, which applies `AuthConfig` headers through `hlsConfig.fetchSetup`; use `fetchSetup` to customize them, for example to enable cross-origin credentials. If an application sets `hlsConfig.xhrSetup` but not `fetchSetup`, ranged fragments keep using XHR so that its setup still applies, and a full-file response is buffered before being sliced. Non-range fragments retain the configured loader. Explicit custom `loader`/`fLoader` implementations are preserved and remain responsible for their own transport buffering; their completed HTTP 200 responses are sliced before being passed to hls.js, but a custom loader that buffers whole files can still exhaust memory.
+
+#### Remaining DASH implementation gaps
+
+This is a static DASH-to-HLS bridge, not a complete DASH client. The following inventory covers the current parser and playback integration; it is not an ISO/IEC 23009-1 conformance claim. Ordinary playback, seeking, buffering, and video ABR are provided by hls.js and are not missing features.
+
+| Area | Missing or restricted support |
+| --- | --- |
+| Live and low latency | Dynamic MPDs, manifest refresh/patching, live DVR windows, `UTCTiming`, DASH availability timing, `ServiceDescription`, live-edge synchronization/catch-up, low-latency CMAF chunk addressing, and dynamic-to-static transitions. |
+| Periods and splicing | Codec or declared video frame-rate changes, audio channel/sample-rate layout changes, adding/removing audio/video tracks, ambiguous alternate-track identities, and gaps/overlaps between Periods. Contiguous compatible Periods, timestamp resets, initialization changes, cross-Period seeks and pre-authored ad Periods are supported. External ad decisions, additional ad MPDs and event-driven source insertion are outside the single-MPD implementation. |
+| Segment addressing | Low-latency/chunked `$SubNumber$` and `SegmentTimeline S@k` addressing. Implicit unindexed files are limited to fragmented MP4 with known file size and at most 64 MiB of media; progressive MP4 requires the separate MP4 playback path. Explicit lists, bounded templates, external/nested indexes and inherited addressing-type overrides are supported. |
+| Timing flexibility | Leading presentation trims/gaps, timeline gaps/overlaps, differing audio/video presentation origins, unaligned video segment boundaries, unknown duration, and integer timing values beyond JavaScript safe precision. Template expansion is limited to 100,000 segments per representation; SIDX indexes to 16 MiB. |
+| Containers and multiplexing | A/V requires separate `video/mp4` and `audio/mp4` representations. WebM, MPEG-TS, multiplexed A/V representations, `ContentComponent`, and `SubRepresentation` are rejected. A/V MIME type and a single codec must be declared; other codecs still depend on browser/hls.js support. Separate MP4 `wvtt`/`stpp`, raw text and image tracks are supported. |
+| Protection | All MPD `ContentProtection` is rejected: no DASH CENC/CBCS signaling, PSSH/default-KID translation, DRM license integration, or key rotation through this bridge. HLS DRM configuration alone does not enable DASH DRM. |
+| Text and images | WebVTT, TTML/IMSC, MP4 `wvtt`/`stpp`, and individual/tiled image thumbnail adaptations are mapped. Remaining restrictions: in-video CEA-608/708 extraction, encrypted text, subtitle MP4 edit lists/multiple sample descriptions, auxiliary codec changes between Periods, automatic forced-subtitle policy, external TTML image/font resources, raw text/image SegmentBase indexes, and trick-mode/I-frame representations. Auxiliary downloads are finite/eager rather than adaptive/on-demand. |
+| Video selection | More than one video AdaptationSet, alternate camera/view selection, adaptation-set switching, codec-family alternatives/capability filtering, and tiled/spatial/scalable-video relationships are not implemented. Unsupported adaptations are rejected rather than filtered out. |
+| Audio selection | No per-track audio bitrate adaptation: only the highest-bandwidth representation is retained. Alternate tracks must share a codec. DASH role/accessibility/default-selection semantics and additional channel-configuration schemes are not translated. |
+| URL resolution and delivery | Multiple BaseURL alternatives, CDN failover/service-location selection, DASH Content Steering, `BaseURL@byteRange`, XLink, `xml:base`, MPD `Location`/`PatchLocation`, DASH URL-query descriptors, and non-HTTP(S) media URLs. |
+| Descriptor metadata | `EssentialProperty` is rejected. `SupplementalProperty`, `Role`, `Accessibility`, and other DASH descriptors are not generally interpreted or preserved in generated playlists, including HDR/color and immersive-media signaling. |
+| Events and interactivity | MPD `EventStream`, DASH `InbandEventStream` subscriptions, SCTE-35/DASH event-driven ad signaling, and DASH-specific event scheduling are not bridged. Raw in-band metadata exposed independently by hls.js is not equivalent to DASH event support. |
+| DASH-specific policies and reporting | MPD buffer/playout policy hints, DASH-native ABR rules/metrics, DASH-derived CMCD/CMSD and reporting descriptors, offline MPD download/license management, and DASH MPD URL-fragment start-time semantics are not implemented. General HLS engine settings and player APIs remain available. |
+
+For comparison with a full DASH client, see the [DASH-IF dash.js feature documentation](https://dashif.org/dash.js/pages/usage/).
+
+### Player Chroming
 
 Player chroming can be configured with the `chromingTheme`, `chromingThemeConfig`, `chromingWatermark`, `chromingWatermarkVisibility`, `chromingFullscreenChroming`, and `chromingStyleUrl` properties. These allow selection of a chroming theme, watermark, and other theme-specific configuration. Some code examples are shown below:
 
@@ -329,6 +406,10 @@ Complete list of Audio API methods is available in API Reference Docs.
 There are two types of audio: **Main audio** and **Sidecar audio**. Main audio refers to audio source attached to main media track. Main audio tracks are embedded audio tracks loaded with main media and only single Main audio track can be active (playing) at same time. Sidecar audio tracks are loaded manually and they are independent of main media load and Main audio. Sidecar audio tracks playback is synced with main media (Main audio) playback and there can be multiple Sidecar audio tracks active (playing) at same time.
 
 Few common usages of Audio API:
+
+MOV audio sidecars can be loaded with `player.loadSidecarTrack(url, {trackType: TrackType.AUDIO})`.
+The original MOV format is preserved; playback still requires browser support for the contained audio codec.
+An HLS playlist is not an audio file and cannot be loaded with `TrackType.AUDIO`.
 
 ```javascript
 // retrieves all available audio tracks
@@ -658,6 +739,18 @@ omakasePlayer.player
       console.log(`Subtitles successfully created`);
     },
   });
+```
+
+Sidecar text tracks also support SRT, SSA, ASS, TTML/DFXP, and SCC. SCC files are decoded to captions by the player; TTML/DFXP is rendered with the IMSC text handler. Set `fileFormatType` in the sidecar load options when the format cannot be inferred from the URL (for example, an XML-named DFXP file):
+
+```javascript
+import {FileFormatType, TrackType} from '@byomakase/omakase-player';
+
+omakasePlayer.player.loadSidecarTrack('https://example.com/captions.xml', {
+  trackType: TrackType.TEXT_TRACK,
+  fileFormatType: FileFormatType.TTML,
+  args: {id: 'captions', label: 'English', srclang: 'en'},
+});
 ```
 
 ## Tracks

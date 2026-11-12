@@ -602,6 +602,7 @@ export class Player implements PlayerApi, Destroyable {
   }
 
   getPlaybackEngine(mainMediaType: MainMediaType.HLS): PlayerPlaybackEngineMapping[MainMediaType.HLS];
+  getPlaybackEngine(mainMediaType: MainMediaType.DASH): PlayerPlaybackEngineMapping[MainMediaType.DASH];
   getPlaybackEngine(mainMediaType: MainMediaType.MP4): PlayerPlaybackEngineMapping[MainMediaType.MP4];
   getPlaybackEngine(mainMediaType: MainMediaType.AUDIO_FILE): PlayerPlaybackEngineMapping[MainMediaType.AUDIO_FILE];
   getPlaybackEngine(mainMediaType: MainMediaType.SLATE): PlayerPlaybackEngineMapping[MainMediaType.SLATE];

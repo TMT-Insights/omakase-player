@@ -16,7 +16,7 @@
 
 export class UrlUtil {
   static isUrlAbsolute(url: string) {
-    return /^(https?|file):\/\//i.test(url);
+    return /^(?:(?:https?|file):\/\/|blob:)/i.test(url);
   }
 
   static absolutizeUrl(rootUrl: string, url: string) {

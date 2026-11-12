@@ -23,7 +23,7 @@ import {TimeRangeUtil} from '../time-range-util';
 import {buildTamsSources, resolveRenderedSegments} from './tams-manifest-builder';
 import type {Manifest} from './tams-adapter';
 import {writeMediaPlaylist} from './tams-adapter';
-import {TamsManifestRegistry} from './tams-manifest-registry';
+import {SyntheticManifestRegistry} from '../../hls/synthetic-manifest-registry';
 import {TAMS_LIVE} from '../constants';
 import type {ManifestResourcesFetcher} from './tams-resource-fetcher';
 import type {TamsMediaData} from './model/tams-media-data-model';
@@ -237,7 +237,7 @@ export class TamsLiveManifestUpdater implements Destroyable {
       if (!uri) {
         continue;
       }
-      TamsManifestRegistry.register(uri, writeMediaPlaylist(source));
+      SyntheticManifestRegistry.register(uri, writeMediaPlaylist(source));
     }
 
     this._loadedTimerange = TamsUtil.resolveSegmentsTimerange(this._tamsMediaData.flowsSegments, [...this._flowsById.values()]) ?? this._loadedTimerange;

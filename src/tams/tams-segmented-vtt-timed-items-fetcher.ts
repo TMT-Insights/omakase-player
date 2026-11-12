@@ -20,7 +20,7 @@ import type {SegmentedVttReadResult} from '../track';
 import type {Manifest} from '../m3u8/m3u8.model';
 import {M3u8Parser} from '../m3u8/m3u8-parser';
 import {SourceUtil} from '../source';
-import {TamsManifestRegistry} from './hls-bridge/tams-manifest-registry';
+import {SyntheticManifestRegistry} from '../hls/synthetic-manifest-registry';
 
 export interface TamsSegmentedVttTimedItemsFetcherArgs extends SegmentedVttTimedItemsFetcherArgs {
   cueTimeShift: (playlistUrl: string) => number | undefined;
@@ -41,7 +41,7 @@ export class TamsSegmentedVttTimedItemsFetcher extends SegmentedVttTimedItemsFet
   override read(): Observable<SegmentedVttReadResult> {
     const playlistUrl = this._track.source ? SourceUtil.resolveUrlFromSource(this._track.source) : void 0;
 
-    if (playlistUrl === void 0 || TamsManifestRegistry.get(playlistUrl) === void 0) {
+    if (playlistUrl === void 0 || SyntheticManifestRegistry.get(playlistUrl) === void 0) {
       return of({targetDuration: void 0, ended: false, updated: false});
     }
 
@@ -49,7 +49,7 @@ export class TamsSegmentedVttTimedItemsFetcher extends SegmentedVttTimedItemsFet
   }
 
   protected override fetchPlaylist(playlistUrl: string): Observable<Manifest> {
-    const playlistText = TamsManifestRegistry.get(playlistUrl);
+    const playlistText = SyntheticManifestRegistry.get(playlistUrl);
 
     return playlistText === void 0 ? super.fetchPlaylist(playlistUrl) : of(M3u8Parser.parse(playlistText));
   }
